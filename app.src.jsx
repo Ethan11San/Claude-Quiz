@@ -1,7 +1,7 @@
 const { useState, useEffect, useCallback, useMemo } = React;
 
 // ════════════════════════════════════════════════════════════
-//  PART 61 · PRIVATE PILOT — Pocket Checkride (standalone)
+//  PART 61 · PRIVATE PILOT + INSTRUMENT — Pocket Checkride (standalone)
 //  Runs anywhere. Persists in localStorage. Regenerate uses YOUR
 //  Anthropic API key (set it via the gear icon → Settings).
 // ════════════════════════════════════════════════════════════
@@ -13,6 +13,89 @@ const regUrl = (sec, quote) => {
   const base = `https://www.ecfr.gov/current/title-14/section-${sec}`;
   return quote ? `${base}#:~:text=${encodeURIComponent(quote)}` : base;
 };
+
+const SECTIONS = {
+  ppl: { key:"ppl", label:"Private Pilot", short:"PPL", reg:"Part 61 PPL" },
+  ir:  { key:"ir",  label:"Instrument Rating", short:"IR", reg:"Part 61 IR" },
+};
+
+const INSTRUMENT_BASE = [
+  { id:"i01", reg:"61.65", topic:"Eligibility", q:"To be eligible for an instrument-airplane rating, you must hold at least:",
+    choices:["A student pilot certificate","A private pilot certificate with an airplane category rating","A commercial pilot certificate","A sport pilot certificate"], answer:1,
+    explain:"§61.65(a)(1): must hold at least a private pilot certificate with an airplane category and single-engine class rating (for instrument-airplane).", quote:"private pilot certificate" },
+  { id:"i02", reg:"61.65", topic:"Knowledge", q:"Before taking the instrument rating knowledge test, the applicant must have:",
+    choices:["A first-class medical","50 hours PIC time","Received and logged ground training or completed a home-study course","Passed the practical test"], answer:2,
+    explain:"§61.65(a)(2): received and logged ground training from an authorized instructor or completed a home-study course.", quote:"home-study course" },
+  { id:"i03", reg:"61.65", topic:"Knowledge", q:"Which is NOT a required area of aeronautical knowledge for the instrument rating under §61.65(b)?",
+    choices:["IFR navigation and approaches by use of navigation systems","Use of IFR en route and instrument approach procedure charts","Formation flight procedures","IFR air traffic control system and procedures"], answer:2,
+    explain:"§61.65(b) lists required knowledge areas; formation flight is not among them.", quote:"aeronautical knowledge" },
+  { id:"i04", reg:"61.65", topic:"Hours · XC PIC", q:"Minimum cross-country PIC flight time required for the instrument-airplane rating?",
+    choices:["25 hours","40 hours","50 hours","100 hours"], answer:2,
+    explain:"§61.65(d)(1): 50 hours of cross-country flight time as pilot in command.", quote:"50 hours of cross-country flight time" },
+  { id:"i05", reg:"61.65", topic:"Hours · Instrument", q:"Minimum hours of instrument training from an authorized instructor (CFII)?",
+    choices:["10 hours","15 hours","20 hours","40 hours"], answer:1,
+    explain:"§61.65(d)(2)(i): 15 hours of instrument flight training from an authorized instructor in the instrument-airplane area of operation.", quote:"15 hours of instrument flight training" },
+  { id:"i06", reg:"61.65", topic:"Hours · Instrument", q:"Total actual or simulated instrument time required for the instrument rating?",
+    choices:["20 hours","30 hours","40 hours","50 hours"], answer:2,
+    explain:"§61.65(d)(2): 40 hours of actual or simulated instrument time.", quote:"40 hours of actual or simulated instrument time" },
+  { id:"i07", reg:"61.65", topic:"Hours · Test Prep", q:"The instrument training in preparation for the practical test must be received within:",
+    choices:["30 days before the test","2 calendar months before the test","90 days before the test","6 months before the test"], answer:1,
+    explain:"§61.65(d)(2)(ii): 3 hours of instrument flight training within the 2 calendar months preceding the practical test.", quote:"2 calendar months" },
+  { id:"i08", reg:"61.65", topic:"Hours · Test Prep", q:"How many hours of instrument test-prep flight training are required in the 2 months before the practical test?",
+    choices:["1 hour","2 hours","3 hours","5 hours"], answer:2,
+    explain:"§61.65(d)(2)(ii): 3 hours of instrument flight training appropriate to the instrument-airplane rating.", quote:"3 hours of instrument flight training" },
+  { id:"i09", reg:"61.65", topic:"XC · IFR", q:"The instrument cross-country flight must total at least:",
+    choices:["100 NM","150 NM","200 NM","250 NM"], answer:3,
+    explain:"§61.65(d)(2)(ii)(C): one cross-country flight of at least 250 nautical miles along airways or ATC-directed routing.", quote:"250 nautical miles" },
+  { id:"i10", reg:"61.65", topic:"XC · IFR", q:"On the instrument cross-country, how many different kinds of instrument approaches must be performed?",
+    choices:["One","Two","Three","Four"], answer:2,
+    explain:"§61.65(d)(2)(ii)(C): must include an instrument approach at each airport, with three different kinds of approaches.", quote:"three different kinds of approaches" },
+  { id:"i11", reg:"61.65", topic:"XC · IFR", q:"The instrument cross-country must be filed and flown under:",
+    choices:["VFR flight plan","IFR flight plan","DVFR flight plan","No flight plan required"], answer:1,
+    explain:"§61.65(d)(2)(ii)(C): one cross-country flight under IFR along airways or ATC-directed routing.", quote:"IFR flight plan" },
+  { id:"i12", reg:"61.65", topic:"Proficiency", q:"The areas of operation for the instrument-airplane practical test include all EXCEPT:",
+    choices:["IFR en route flight","Precision and nonprecision approaches","Recovery from unusual attitudes","Formation instrument flying"], answer:3,
+    explain:"§61.65(c) lists areas of operation; formation instrument flying is not among them.", quote:"areas of operation" },
+  { id:"i13", reg:"61.65", topic:"Sim/ATD", q:"Instrument training time may be logged in which of the following?",
+    choices:["Only actual aircraft","Aircraft, flight simulator, or flight training device","Only full-motion simulators","Only approved ATDs"], answer:1,
+    explain:"§61.65(i): instrument time may be logged in an aircraft, flight simulator, or flight training device.", quote:"flight simulator" },
+  { id:"i14", reg:"61.57", topic:"Currency", q:"To act as PIC under IFR, within the preceding 6 calendar months you must have performed and logged at least:",
+    choices:["3 instrument approaches","6 instrument approaches, holding, and intercepting/tracking courses","10 instrument approaches","1 IFR cross-country"], answer:1,
+    explain:"§61.57(c)(1): within the preceding 6 calendar months — 6 instrument approaches, holding procedures and tasks, and intercepting and tracking courses through the use of navigational electronic systems.", quote:"6 instrument approaches" },
+  { id:"i15", reg:"61.57", topic:"Currency", q:"If your instrument currency lapses (beyond 6 months but within 12), you can regain it by:",
+    choices:["Filing an IFR flight plan","Completing an instrument proficiency check","Performing the tasks in §61.57(c) with a safety pilot or in an approved simulator","Taking the written test again"], answer:2,
+    explain:"§61.57(c)(2): if more than 6 calendar months have elapsed, you may use the preceding 6 months to meet the requirements with a safety pilot, CFII, or approved device.", quote:"safety pilot" },
+  { id:"i16", reg:"61.57", topic:"Currency", q:"If your instrument currency lapses beyond 12 calendar months, you must:",
+    choices:["Retake the knowledge test","Pass an instrument proficiency check (IPC)","Log 10 hours of simulated instrument","Obtain a new instrument rating"], answer:1,
+    explain:"§61.57(d): if more than 12 calendar months have elapsed, must pass an instrument proficiency check in the category, class, or type of aircraft.", quote:"instrument proficiency check" },
+  { id:"i17", reg:"61.65", topic:"Knowledge", q:"Which is a required knowledge area under §61.65(b) for the instrument rating?",
+    choices:["Aerobatic flight techniques","Procurement and use of aviation weather reports and forecasts","Formation flight procedures","Agricultural operations"], answer:1,
+    explain:"§61.65(b) requires knowledge of procurement and use of aviation weather reports and forecasts, and the elements of forecasting weather trends.", quote:"aviation weather reports and forecasts" },
+  { id:"i18", reg:"61.65", topic:"Proficiency", q:"Which of the following is an area of operation required for instrument-airplane proficiency?",
+    choices:["Chandelles and lazy eights","Postflight procedures","Water operations","Spin recovery"], answer:1,
+    explain:"§61.65(c) includes postflight procedures among the required areas of operation for the instrument rating.", quote:"Postflight procedures" },
+  { id:"i19", reg:"61.3", topic:"Certificates", q:"To act as PIC of an aircraft under IFR, the pilot must hold:",
+    choices:["Only a private pilot certificate","A private pilot certificate and an instrument rating for the category of aircraft","A commercial pilot certificate","An ATP certificate"], answer:1,
+    explain:"§61.3(e): no person may act as PIC under IFR unless that person holds an instrument rating on their pilot certificate for the appropriate category.", quote:"instrument rating" },
+  { id:"i20", reg:"61.65", topic:"XC · PIC", q:"The 50 hours of PIC cross-country time must be in what position?",
+    choices:["Safety pilot","Second in command","Pilot in command","Dual received"], answer:2,
+    explain:"§61.65(d)(1): 50 hours of cross-country flight time as pilot in command, of which at least 10 hours must be in airplanes.", quote:"pilot in command" },
+  { id:"i21", reg:"61.65", topic:"XC · PIC", q:"Of the 50 hours PIC cross-country, how many must be in airplanes (for instrument-airplane)?",
+    choices:["5 hours","10 hours","25 hours","50 hours"], answer:1,
+    explain:"§61.65(d)(1): at least 10 hours of the 50 PIC cross-country hours must be in airplanes.", quote:"10 hours must be in airplanes" },
+  { id:"i22", reg:"61.57", topic:"Currency", q:"The instrument currency tasks in §61.57(c) include all of the following EXCEPT:",
+    choices:["Holding procedures","Intercepting and tracking courses","Six instrument approaches","Three takeoffs and landings"], answer:3,
+    explain:"§61.57(c)(1) requires 6 approaches, holding procedures, and intercepting/tracking courses — takeoffs and landings are a VFR currency item.", quote:"holding procedures and tasks" },
+  { id:"i23", reg:"61.65", topic:"Knowledge", q:"The instrument knowledge test must include knowledge of the safe and efficient operation of aircraft under:",
+    choices:["VFR conditions only","IFR conditions","Night VFR conditions","Day VFR conditions"], answer:1,
+    explain:"§61.65(a)(2): aeronautical knowledge for the safe and efficient operation of aircraft under instrument flight rules and conditions.", quote:"instrument flight rules" },
+  { id:"i24", reg:"61.65", topic:"Sim/ATD", q:"A maximum of how many hours of instrument training may be performed in an approved ATD toward the rating?",
+    choices:["5 hours","10 hours","20 hours","All 40 hours"], answer:1,
+    explain:"§61.65(i): credit for training in an ATD is limited — no more than 10 hours of training in an ATD may be credited.", quote:"aviation training device" },
+  { id:"i25", reg:"61.65", topic:"XC · IFR", q:"On the required IFR cross-country, the flight must be along:",
+    choices:["Any route chosen by the pilot","Airways or ATC-directed routing","Only victor airways","Only GPS direct routes"], answer:1,
+    explain:"§61.65(d)(2)(ii)(C): along airways or by directed routing from an ATC facility.", quote:"airways or by directed routing" },
+];
 
 const BASE = [
   { id:"b01", reg:"61.103", topic:"Eligibility", q:"Minimum age to be eligible for a private pilot certificate in an airplane?",
@@ -115,6 +198,7 @@ const shuffle = (arr) => {
 
 function App(){
   const [tab, setTab] = useState("quiz");
+  const [section, setSection] = useState("ppl");
   const [state, setState] = useState(() => loadState());
   const [settings, setSettings] = useState(() => loadSettings());
   const [editing, setEditing] = useState(null);
@@ -125,12 +209,18 @@ function App(){
   }, []);
   const persistSettings = (s) => { setSettings(s); saveSettings(s); };
 
+  const basePool = section === "ir" ? INSTRUMENT_BASE : BASE;
+
   const questions = useMemo(() => {
-    const all = [...BASE, ...state.generated];
+    const all = [...basePool, ...state.generated.filter((g) => {
+      if (section === "ir") return g.id.startsWith("gen-ir-");
+      return !g.id.startsWith("gen-ir-");
+    })];
     return all.filter((q)=>!state.deleted.includes(q.id)).map((q)=> state.edits[q.id]?{...q,...state.edits[q.id]}:q);
-  }, [state]);
+  }, [state, basePool, section]);
 
   const savedQuestions = questions.filter((q)=>state.saved.includes(q.id));
+  const sec = SECTIONS[section];
 
   return (
     <div style={S.app}>
@@ -138,22 +228,29 @@ function App(){
       <header style={S.header}>
         <div style={S.brand}><span style={S.brandDot} /><span style={S.brandText}>POCKET CHECKRIDE</span></div>
         <div style={{display:"flex",alignItems:"center",gap:12}}>
-          <span style={S.brandSub}>PART 61 PPL</span>
+          <span style={S.brandSub}>{sec.reg.toUpperCase()}</span>
           <button style={S.gear} onClick={()=>setShowSettings(true)} title="Settings">⚙</button>
         </div>
       </header>
 
+      <div style={S.sectionBar}>
+        {Object.values(SECTIONS).map((s) => (
+          <button key={s.key} style={{...S.sectionBtn,...(section===s.key?S.sectionBtnActive:{})}}
+            onClick={()=>{ setSection(s.key); setTab("quiz"); }}>{s.label}</button>
+        ))}
+      </div>
+
       <main style={S.main}>
-        {tab==="quiz" && <Quiz pool={questions} scopeLabel="All questions" />}
+        {tab==="quiz" && <Quiz pool={questions} scopeLabel={`${sec.short} · All questions`} />}
         {tab==="saved" && (savedQuestions.length
-          ? <Quiz pool={savedQuestions} scopeLabel="Saved questions" />
+          ? <Quiz pool={savedQuestions} scopeLabel={`${sec.short} · Saved questions`} />
           : <Empty glyph="★" title="No saved questions yet" body="Tap the star on any question in the Library to build a focused study set, then drill it here." />)}
-        {tab==="library" && <Library questions={questions} state={state} persist={persist} onEdit={setEditing} settings={settings} openSettings={()=>setShowSettings(true)} />}
+        {tab==="library" && <Library questions={questions} state={state} persist={persist} onEdit={setEditing} settings={settings} openSettings={()=>setShowSettings(true)} section={section} />}
       </main>
 
       <nav style={S.tabbar}>
         <TabBtn active={tab==="quiz"} onClick={()=>setTab("quiz")} icon="✈" label="Quiz" />
-        <TabBtn active={tab==="saved"} onClick={()=>setTab("saved")} icon="★" label={`Saved${state.saved.length?` ${state.saved.length}`:""}`} />
+        <TabBtn active={tab==="saved"} onClick={()=>setTab("saved")} icon="★" label={`Saved${savedQuestions.length?` ${savedQuestions.length}`:""}`} />
         <TabBtn active={tab==="library"} onClick={()=>setTab("library")} icon="≡" label="Library" />
       </nav>
 
@@ -245,7 +342,7 @@ function Quiz({ pool, scopeLabel }){
   );
 }
 
-function Library({ questions, state, persist, onEdit, settings, openSettings }){
+function Library({ questions, state, persist, onEdit, settings, openSettings, section }){
   const [busy, setBusy] = useState(null);
   const [err, setErr] = useState(null);
   const [showDeleted, setShowDeleted] = useState(false);
@@ -259,9 +356,10 @@ function Library({ questions, state, persist, onEdit, settings, openSettings }){
     if (!settings.apiKey){ setErr({id:q.id, msg:"No API key set. Tap the ⚙ gear (top-right) and paste your Anthropic API key to enable Regenerate."}); return; }
     setBusy(q.id);
     try {
+      const certLabel = section === "ir" ? "Instrument Rating — Airplane" : "Private Pilot — Airplane Single-Engine Land";
       const prompt =
         `Write ONE multiple-choice question testing knowledge of 14 CFR ${q.reg} (topic: ${q.topic}) `+
-        `for the FAA Private Pilot — Airplane Single-Engine Land certificate. It must be factually accurate to the current regulation `+
+        `for the FAA ${certLabel} certificate. It must be factually accurate to the current regulation `+
         `and different from this one: "${q.q}". Return ONLY valid minified JSON, no markdown, with exactly these keys: `+
         `"q" (string), "choices" (array of exactly 4 short strings), "answer" (integer 0-3 = index of the correct choice), `+
         `"explain" (string, one sentence, citing the specific paragraph), `+
@@ -294,7 +392,9 @@ function Library({ questions, state, persist, onEdit, settings, openSettings }){
   };
 
   const addBlank = () => {
-    const blank = { id:"gen-"+Date.now(), reg:"61.109", topic:"Custom", q:"New question — tap edit to write it.",
+    const prefix = section === "ir" ? "gen-ir-" : "gen-";
+    const defaultReg = section === "ir" ? "61.65" : "61.109";
+    const blank = { id:prefix+Date.now(), reg:defaultReg, topic:"Custom", q:"New question — tap edit to write it.",
       choices:["Option A","Option B","Option C","Option D"], answer:0, explain:"", quote:"" };
     persist((p)=>({...p, generated:[...p.generated, blank]}));
     setTimeout(()=>onEdit(blank),0);
@@ -348,6 +448,7 @@ function Library({ questions, state, persist, onEdit, settings, openSettings }){
       <div style={S.disclaimer}>
         Study aid only — verify against the current eCFR. Part 141 minimums differ.
         Reg links highlight exact text in Chrome, Edge &amp; Safari. Regenerated questions are AI-written; spot-check them.
+        {section === "ir" && " Instrument section covers §61.65 requirements for ASEL instrument add-on."}
       </div>
     </div>
   );
@@ -465,6 +566,9 @@ const S = {
   brandText:{fontWeight:700,fontSize:13,letterSpacing:1.5},
   brandSub:{fontSize:10,letterSpacing:1.5,color:"rgba(255,255,255,0.35)"},
   gear:{background:"rgba(255,255,255,0.06)",border:"1px solid rgba(255,255,255,0.12)",color:"#e9e6df",width:32,height:32,borderRadius:8,fontSize:15,cursor:"pointer"},
+  sectionBar:{display:"flex",justifyContent:"center",gap:6,padding:"10px 16px 0",maxWidth:600,width:"100%",margin:"0 auto"},
+  sectionBtn:{flex:"1 1 auto",maxWidth:180,background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:9,padding:"9px 14px",fontSize:12,fontWeight:600,letterSpacing:0.5,color:"rgba(255,255,255,0.5)",cursor:"pointer",transition:"all .15s ease"},
+  sectionBtnActive:{background:"rgba(240,164,76,0.15)",borderColor:accent,color:accent},
   main:{flex:1,maxWidth:600,width:"100%",margin:"0 auto",padding:"18px 16px 96px"},
   quizTop:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8},
   scope:{fontSize:11,letterSpacing:1,color:"rgba(255,255,255,0.4)",textTransform:"uppercase"},
