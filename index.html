@@ -336,6 +336,7 @@ function(a,b,c){if(!Vd(b))throw Error(m(200));return Wd(null,a,b,!1,c)};Q.unmoun
 const { useState, useEffect, useCallback, useMemo } = React;
 const STORE_KEY = "part61ppl:v2";
 const SETTINGS_KEY = "part61ppl:settings";
+const GITHUB_KEY = "part61ppl:github";
 const regUrl = (sec, quote) => {
   const base = `https://www.ecfr.gov/current/title-14/section-${sec}`;
   return quote ? `${base}#:~:text=${encodeURIComponent(quote)}` : base;
@@ -876,6 +877,57 @@ function saveSettings(s) {
   } catch (e) {
   }
 }
+function loadGithub() {
+  try {
+    const r = localStorage.getItem(GITHUB_KEY);
+    if (r) return JSON.parse(r);
+  } catch (e) {
+  }
+  return { token: "", owner: "", repo: "" };
+}
+function saveGithub(g) {
+  try {
+    localStorage.setItem(GITHUB_KEY, JSON.stringify(g));
+  } catch (e) {
+  }
+}
+async function pushToGithub(gh, data) {
+  const path = "user-data.json";
+  const url = `https://api.github.com/repos/${gh.owner}/${gh.repo}/contents/${path}`;
+  let sha;
+  try {
+    const existing = await fetch(url, { headers: { Authorization: `token ${gh.token}` } });
+    if (existing.ok) {
+      const j = await existing.json();
+      sha = j.sha;
+    }
+  } catch (_) {
+  }
+  const body = JSON.stringify({ message: "Sync quiz data from Pocket Checkride", content: btoa(unescape(encodeURIComponent(JSON.stringify(data, null, 2)))), ...sha ? { sha } : {} });
+  const res = await fetch(url, { method: "PUT", headers: { Authorization: `token ${gh.token}`, "Content-Type": "application/json" }, body });
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({}));
+    throw new Error(e.message || `${res.status} ${res.statusText}`);
+  }
+  return res.json();
+}
+async function pullFromGithub(gh) {
+  const url = `https://api.github.com/repos/${gh.owner}/${gh.repo}/contents/user-data.json`;
+  const headers = gh.token ? { Authorization: `token ${gh.token}` } : {};
+  const res = await fetch(url, { headers });
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  const j = await res.json();
+  return JSON.parse(decodeURIComponent(escape(atob(j.content.replace(/\n/g, "")))));
+}
+function exportData(state) {
+  const blob = new Blob([JSON.stringify(state, null, 2)], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `pocket-checkride-data-${(/* @__PURE__ */ new Date()).toISOString().slice(0, 10)}.json`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
 const shuffle = (arr) => {
   const a = [...arr];
   for (let i = a.length - 1; i > 0; i--) {
@@ -891,6 +943,7 @@ function App() {
   const [settings, setSettings] = useState(() => loadSettings());
   const [editing, setEditing] = useState(null);
   const [showSettings, setShowSettings] = useState(false);
+  const [github, setGithub] = useState(() => loadGithub());
   const persist = useCallback((updater) => {
     setState((prev) => {
       const next = typeof updater === "function" ? updater(prev) : updater;
@@ -901,6 +954,10 @@ function App() {
   const persistSettings = (s) => {
     setSettings(s);
     saveSettings(s);
+  };
+  const persistGithub = (g) => {
+    setGithub(g);
+    saveGithub(g);
   };
   const basePool = section === "ir" ? INSTRUMENT_BASE : BASE;
   const questions = useMemo(() => {
@@ -933,10 +990,21 @@ function App() {
         setEditing(null);
       }
     }
-  ), showSettings && /* @__PURE__ */ React.createElement(SettingsModal, { settings, onSave: (s) => {
-    persistSettings(s);
-    setShowSettings(false);
-  }, onClose: () => setShowSettings(false) }));
+  ), showSettings && /* @__PURE__ */ React.createElement(
+    SettingsModal,
+    {
+      settings,
+      onSave: (s) => {
+        persistSettings(s);
+        setShowSettings(false);
+      },
+      onClose: () => setShowSettings(false),
+      github,
+      onSaveGithub: persistGithub,
+      state,
+      onLoadState: (s) => persist(s)
+    }
+  ));
 }
 function RegLink({ reg, quote, style }) {
   return /* @__PURE__ */ React.createElement(
@@ -1098,10 +1166,78 @@ function EditModal({ question, onClose, onSave }) {
   const setChoice = (i, v) => setChoices((c) => c.map((x, j) => j === i ? v : x));
   return /* @__PURE__ */ React.createElement("div", { style: S.overlay, onClick: onClose }, /* @__PURE__ */ React.createElement("div", { style: S.modal, onClick: (e) => e.stopPropagation() }, /* @__PURE__ */ React.createElement("div", { style: S.modalHead }, /* @__PURE__ */ React.createElement("span", { style: S.modalTitle }, "Edit Question"), /* @__PURE__ */ React.createElement("button", { style: S.closeBtn, onClick: onClose }, "\u2715")), /* @__PURE__ */ React.createElement("label", { style: S.lbl }, "Question"), /* @__PURE__ */ React.createElement("textarea", { style: S.textarea, value: q, onChange: (e) => setQ(e.target.value), rows: 2 }), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 10 } }, /* @__PURE__ */ React.createElement("div", { style: { flex: 1 } }, /* @__PURE__ */ React.createElement("label", { style: S.lbl }, "Reg \xA7 (e.g. 61.109)"), /* @__PURE__ */ React.createElement("input", { style: S.input, value: reg, onChange: (e) => setReg(e.target.value.replace(/[^0-9.]/g, "")) })), /* @__PURE__ */ React.createElement("div", { style: { flex: 1 } }, /* @__PURE__ */ React.createElement("label", { style: S.lbl }, "Topic"), /* @__PURE__ */ React.createElement("input", { style: S.input, value: topic, onChange: (e) => setTopic(e.target.value) }))), /* @__PURE__ */ React.createElement("label", { style: S.lbl }, "Choices \u2014 tap the circle to mark the correct one"), choices.map((c, i) => /* @__PURE__ */ React.createElement("div", { key: i, style: S.choiceEditRow }, /* @__PURE__ */ React.createElement("button", { onClick: () => setAnswer(i), style: { ...S.radio, ...answer === i ? S.radioOn : {} } }, answer === i ? "\u2713" : String.fromCharCode(65 + i)), /* @__PURE__ */ React.createElement("input", { style: S.input, value: c, onChange: (e) => setChoice(i, e.target.value) }))), /* @__PURE__ */ React.createElement("label", { style: S.lbl }, "Explanation"), /* @__PURE__ */ React.createElement("textarea", { style: S.textarea, value: explain, onChange: (e) => setExplain(e.target.value), rows: 2 }), /* @__PURE__ */ React.createElement("label", { style: S.lbl }, "Highlight phrase \u2014 verbatim text from the reg to highlight on click"), /* @__PURE__ */ React.createElement("input", { style: S.input, value: quote, onChange: (e) => setQuote(e.target.value), placeholder: "e.g. 150 nautical miles total distance" }), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 10, marginTop: 16 } }, /* @__PURE__ */ React.createElement("button", { style: { ...S.primary, flex: 1 }, onClick: () => onSave({ q, reg, topic, choices, answer, explain, quote }) }, "Save Changes"), /* @__PURE__ */ React.createElement("button", { style: S.cancelBtn, onClick: onClose }, "Cancel"))));
 }
-function SettingsModal({ settings, onSave, onClose }) {
+function SettingsModal({ settings, onSave, onClose, github, onSaveGithub, state, onLoadState }) {
   const [apiKey, setApiKey] = useState(settings.apiKey || "");
   const [model, setModel] = useState(settings.model || "claude-haiku-4-5-20251001");
-  return /* @__PURE__ */ React.createElement("div", { style: S.overlay, onClick: onClose }, /* @__PURE__ */ React.createElement("div", { style: S.modal, onClick: (e) => e.stopPropagation() }, /* @__PURE__ */ React.createElement("div", { style: S.modalHead }, /* @__PURE__ */ React.createElement("span", { style: S.modalTitle }, "Settings"), /* @__PURE__ */ React.createElement("button", { style: S.closeBtn, onClick: onClose }, "\u2715")), /* @__PURE__ */ React.createElement("p", { style: { fontSize: 12.5, lineHeight: 1.6, color: "rgba(255,255,255,0.6)", margin: "0 0 6px" } }, "The ", /* @__PURE__ */ React.createElement("b", null, "Regenerate"), " feature calls Anthropic's API. Paste your own API key to enable it. The key is stored only in this browser (localStorage) and sent directly to Anthropic."), /* @__PURE__ */ React.createElement("label", { style: S.lbl }, "Anthropic API key"), /* @__PURE__ */ React.createElement("input", { style: S.input, type: "password", value: apiKey, onChange: (e) => setApiKey(e.target.value.trim()), placeholder: "sk-ant-\u2026", autoComplete: "off" }), /* @__PURE__ */ React.createElement("label", { style: S.lbl }, "Model"), /* @__PURE__ */ React.createElement("input", { style: S.input, value: model, onChange: (e) => setModel(e.target.value.trim()), placeholder: "claude-haiku-4-5-20251001" }), /* @__PURE__ */ React.createElement("p", { style: { fontSize: 11, lineHeight: 1.55, color: "rgba(255,255,255,0.4)", margin: "10px 0 0" } }, "Get a key at console.anthropic.com \u2192 API Keys. Use any model your account has access to (e.g. claude-opus-4-6). Don't publish this file with your key embedded \u2014 anyone could use it."), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 10, marginTop: 16 } }, /* @__PURE__ */ React.createElement("button", { style: { ...S.primary, flex: 1 }, onClick: () => onSave({ apiKey, model }) }, "Save"), /* @__PURE__ */ React.createElement("button", { style: S.cancelBtn, onClick: onClose }, "Cancel"))));
+  const [ghToken, setGhToken] = useState(github.token || "");
+  const [ghOwner, setGhOwner] = useState(github.owner || "");
+  const [ghRepo, setGhRepo] = useState(github.repo || "");
+  const [syncMsg, setSyncMsg] = useState(null);
+  const [syncing, setSyncing] = useState(false);
+  const fileRef = React.createRef();
+  const doSaveGithub = () => {
+    onSaveGithub({ token: ghToken, owner: ghOwner, repo: ghRepo });
+    setSyncMsg({ ok: true, msg: "GitHub settings saved." });
+  };
+  const doPush = async () => {
+    if (!ghToken || !ghOwner || !ghRepo) {
+      setSyncMsg({ ok: false, msg: "Fill in all GitHub fields first." });
+      return;
+    }
+    setSyncing(true);
+    setSyncMsg(null);
+    try {
+      await pushToGithub({ token: ghToken, owner: ghOwner, repo: ghRepo }, state);
+      setSyncMsg({ ok: true, msg: "Pushed to GitHub successfully." });
+    } catch (e) {
+      setSyncMsg({ ok: false, msg: `Push failed: ${e.message}` });
+    } finally {
+      setSyncing(false);
+    }
+  };
+  const doPull = async () => {
+    if (!ghOwner || !ghRepo) {
+      setSyncMsg({ ok: false, msg: "Fill in owner and repo fields." });
+      return;
+    }
+    setSyncing(true);
+    setSyncMsg(null);
+    try {
+      const data = await pullFromGithub({ token: ghToken, owner: ghOwner, repo: ghRepo });
+      if (!data) {
+        setSyncMsg({ ok: false, msg: "No user-data.json found in the repo yet. Push first." });
+        return;
+      }
+      onLoadState(data);
+      setSyncMsg({ ok: true, msg: "Pulled from GitHub and loaded." });
+    } catch (e) {
+      setSyncMsg({ ok: false, msg: `Pull failed: ${e.message}` });
+    } finally {
+      setSyncing(false);
+    }
+  };
+  const doImport = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const data = JSON.parse(ev.target.result);
+        onLoadState(data);
+        setSyncMsg({ ok: true, msg: "Imported successfully." });
+      } catch (_) {
+        setSyncMsg({ ok: false, msg: "Invalid JSON file." });
+      }
+    };
+    reader.readAsText(file);
+  };
+  return /* @__PURE__ */ React.createElement("div", { style: S.overlay, onClick: onClose }, /* @__PURE__ */ React.createElement("div", { style: S.modal, onClick: (e) => e.stopPropagation() }, /* @__PURE__ */ React.createElement("div", { style: S.modalHead }, /* @__PURE__ */ React.createElement("span", { style: S.modalTitle }, "Settings"), /* @__PURE__ */ React.createElement("button", { style: S.closeBtn, onClick: onClose }, "\u2715")), /* @__PURE__ */ React.createElement("p", { style: { fontSize: 12.5, lineHeight: 1.6, color: "rgba(255,255,255,0.6)", margin: "0 0 6px" } }, "The ", /* @__PURE__ */ React.createElement("b", null, "Regenerate"), " feature calls Anthropic's API. Paste your own API key to enable it. The key is stored only in this browser (localStorage) and sent directly to Anthropic."), /* @__PURE__ */ React.createElement("label", { style: S.lbl }, "Anthropic API key"), /* @__PURE__ */ React.createElement("input", { style: S.input, type: "password", value: apiKey, onChange: (e) => setApiKey(e.target.value.trim()), placeholder: "sk-ant-\u2026", autoComplete: "off" }), /* @__PURE__ */ React.createElement("label", { style: S.lbl }, "Model"), /* @__PURE__ */ React.createElement("input", { style: S.input, value: model, onChange: (e) => setModel(e.target.value.trim()), placeholder: "claude-haiku-4-5-20251001" }), /* @__PURE__ */ React.createElement("p", { style: { fontSize: 11, lineHeight: 1.55, color: "rgba(255,255,255,0.4)", margin: "10px 0 0" } }, "Get a key at console.anthropic.com \u2192 API Keys. Use any model your account has access to (e.g. claude-opus-4-6). Don't publish this file with your key embedded \u2014 anyone could use it."), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 10, marginTop: 16 } }, /* @__PURE__ */ React.createElement("button", { style: { ...S.primary, flex: 1 }, onClick: () => onSave({ apiKey, model }) }, "Save API Settings"), /* @__PURE__ */ React.createElement("button", { style: S.cancelBtn, onClick: onClose }, "Cancel")), /* @__PURE__ */ React.createElement("div", { style: S.divider }), /* @__PURE__ */ React.createElement("span", { style: S.modalTitle }, "GitHub Sync"), /* @__PURE__ */ React.createElement("p", { style: { fontSize: 12.5, lineHeight: 1.6, color: "rgba(255,255,255,0.6)", margin: "6px 0 6px" } }, "Push your edits, generated questions, and saved/deleted lists to your GitHub repo as ", /* @__PURE__ */ React.createElement("code", { style: { color: "#f0a44c" } }, "user-data.json"), ". Pull to load them on another device."), /* @__PURE__ */ React.createElement("label", { style: S.lbl }, "GitHub personal access token"), /* @__PURE__ */ React.createElement("input", { style: S.input, type: "password", value: ghToken, onChange: (e) => setGhToken(e.target.value.trim()), placeholder: "ghp_\u2026", autoComplete: "off" }), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 10 } }, /* @__PURE__ */ React.createElement("div", { style: { flex: 1 } }, /* @__PURE__ */ React.createElement("label", { style: S.lbl }, "Repo owner"), /* @__PURE__ */ React.createElement("input", { style: S.input, value: ghOwner, onChange: (e) => setGhOwner(e.target.value.trim()), placeholder: "Ethan11San" })), /* @__PURE__ */ React.createElement("div", { style: { flex: 1 } }, /* @__PURE__ */ React.createElement("label", { style: S.lbl }, "Repo name"), /* @__PURE__ */ React.createElement("input", { style: S.input, value: ghRepo, onChange: (e) => setGhRepo(e.target.value.trim()), placeholder: "Claude-Quiz" }))), /* @__PURE__ */ React.createElement("p", { style: { fontSize: 11, lineHeight: 1.55, color: "rgba(255,255,255,0.4)", margin: "10px 0 0" } }, "Create a token at github.com \u2192 Settings \u2192 Developer settings \u2192 Personal access tokens \u2192 Fine-grained tokens. Give it ", /* @__PURE__ */ React.createElement("b", null, "Contents: Read and write"), " permission for your quiz repo only."), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("button", { style: { ...S.primary, flex: "1 1 auto" }, disabled: syncing, onClick: () => {
+    doSaveGithub();
+    doPush();
+  } }, syncing ? "Pushing\u2026" : "Push to GitHub"), /* @__PURE__ */ React.createElement("button", { style: { ...S.ghostBtn, flex: "1 1 auto" }, disabled: syncing, onClick: () => {
+    doSaveGithub();
+    doPull();
+  } }, syncing ? "Pulling\u2026" : "Pull from GitHub"), /* @__PURE__ */ React.createElement("button", { style: { ...S.ghostBtn, flex: "1 1 auto" }, onClick: doSaveGithub }, "Save GitHub Settings")), syncMsg && /* @__PURE__ */ React.createElement("div", { style: { ...S.errBox, ...syncMsg.ok ? { color: "#5fd38a", background: "rgba(95,211,138,0.1)", borderColor: "rgba(95,211,138,0.3)" } : {}, marginTop: 10 } }, syncMsg.msg), /* @__PURE__ */ React.createElement("div", { style: S.divider }), /* @__PURE__ */ React.createElement("span", { style: S.modalTitle }, "Export / Import"), /* @__PURE__ */ React.createElement("p", { style: { fontSize: 12.5, lineHeight: 1.6, color: "rgba(255,255,255,0.6)", margin: "6px 0 6px" } }, "Download your data as a JSON file for backup, or import a previously exported file."), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 8 } }, /* @__PURE__ */ React.createElement("button", { style: { ...S.ghostBtn, flex: 1 }, onClick: () => exportData(state) }, "Export JSON"), /* @__PURE__ */ React.createElement("button", { style: { ...S.ghostBtn, flex: 1 }, onClick: () => fileRef.current.click() }, "Import JSON"), /* @__PURE__ */ React.createElement("input", { ref: fileRef, type: "file", accept: ".json", style: { display: "none" }, onChange: doImport }))));
 }
 function TabBtn({ active, onClick, icon, label }) {
   return /* @__PURE__ */ React.createElement("button", { onClick, style: { ...S.tab, ...active ? S.tabActive : {} } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 18, lineHeight: 1 } }, icon), /* @__PURE__ */ React.createElement("span", { style: S.tabLabel }, label));
@@ -1228,7 +1364,8 @@ const S = {
   choiceEditRow: { display: "flex", alignItems: "center", gap: 9, marginBottom: 8 },
   radio: { flexShrink: 0, width: 30, height: 30, borderRadius: 8, border: "1px solid rgba(255,255,255,0.18)", background: "rgba(255,255,255,0.04)", color: "rgba(255,255,255,0.6)", fontWeight: 700, fontSize: 12, cursor: "pointer" },
   radioOn: { background: "#5fd38a", borderColor: "#5fd38a", color: "#08130c" },
-  cancelBtn: { background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.12)", color: "#e9e6df", borderRadius: 10, padding: "12px 20px", fontSize: 13, cursor: "pointer" }
+  cancelBtn: { background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.12)", color: "#e9e6df", borderRadius: 10, padding: "12px 20px", fontSize: 13, cursor: "pointer" },
+  divider: { height: 1, background: "rgba(255,255,255,0.1)", margin: "20px 0 16px" }
 };
 ReactDOM.createRoot(document.getElementById("root")).render(/* @__PURE__ */ React.createElement(App, null));
 

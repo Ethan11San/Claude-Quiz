@@ -8,6 +8,7 @@ const { useState, useEffect, useCallback, useMemo } = React;
 
 const STORE_KEY = "part61ppl:v2";
 const SETTINGS_KEY = "part61ppl:settings";
+const GITHUB_KEY = "part61ppl:github";
 
 const regUrl = (sec, quote) => {
   const base = `https://www.ecfr.gov/current/title-14/section-${sec}`;
@@ -189,6 +190,42 @@ function loadSettings(){
   return { apiKey:"", model:"claude-haiku-4-5-20251001" };
 }
 function saveSettings(s){ try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(s)); } catch(e){} }
+function loadGithub(){
+  try { const r = localStorage.getItem(GITHUB_KEY); if (r) return JSON.parse(r); } catch(e){}
+  return { token:"", owner:"", repo:"" };
+}
+function saveGithub(g){ try { localStorage.setItem(GITHUB_KEY, JSON.stringify(g)); } catch(e){} }
+
+async function pushToGithub(gh, data){
+  const path = "user-data.json";
+  const url = `https://api.github.com/repos/${gh.owner}/${gh.repo}/contents/${path}`;
+  let sha;
+  try {
+    const existing = await fetch(url, { headers:{ Authorization:`token ${gh.token}` } });
+    if (existing.ok){ const j = await existing.json(); sha = j.sha; }
+  } catch(_){}
+  const body = JSON.stringify({ message:"Sync quiz data from Pocket Checkride", content: btoa(unescape(encodeURIComponent(JSON.stringify(data,null,2)))), ...(sha?{sha}:{}) });
+  const res = await fetch(url, { method:"PUT", headers:{ Authorization:`token ${gh.token}`, "Content-Type":"application/json" }, body });
+  if (!res.ok){ const e = await res.json().catch(()=>({})); throw new Error(e.message || `${res.status} ${res.statusText}`); }
+  return res.json();
+}
+
+async function pullFromGithub(gh){
+  const url = `https://api.github.com/repos/${gh.owner}/${gh.repo}/contents/user-data.json`;
+  const headers = gh.token ? { Authorization:`token ${gh.token}` } : {};
+  const res = await fetch(url, { headers });
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  const j = await res.json();
+  return JSON.parse(decodeURIComponent(escape(atob(j.content.replace(/\n/g,"")))));
+}
+
+function exportData(state){
+  const blob = new Blob([JSON.stringify(state,null,2)], { type:"application/json" });
+  const a = document.createElement("a"); a.href = URL.createObjectURL(blob);
+  a.download = `pocket-checkride-data-${new Date().toISOString().slice(0,10)}.json`;
+  a.click(); URL.revokeObjectURL(a.href);
+}
 
 const shuffle = (arr) => {
   const a = [...arr];
@@ -203,11 +240,13 @@ function App(){
   const [settings, setSettings] = useState(() => loadSettings());
   const [editing, setEditing] = useState(null);
   const [showSettings, setShowSettings] = useState(false);
+  const [github, setGithub] = useState(() => loadGithub());
 
   const persist = useCallback((updater) => {
     setState((prev) => { const next = typeof updater==="function"?updater(prev):updater; saveState(next); return next; });
   }, []);
   const persistSettings = (s) => { setSettings(s); saveSettings(s); };
+  const persistGithub = (g) => { setGithub(g); saveGithub(g); };
 
   const basePool = section === "ir" ? INSTRUMENT_BASE : BASE;
 
@@ -257,7 +296,8 @@ function App(){
       {editing && <EditModal question={editing} onClose={()=>setEditing(null)}
         onSave={(patch)=>{ persist((p)=>({...p, edits:{...p.edits,[editing.id]:{...p.edits[editing.id],...patch}}})); setEditing(null); }} />}
 
-      {showSettings && <SettingsModal settings={settings} onSave={(s)=>{persistSettings(s); setShowSettings(false);}} onClose={()=>setShowSettings(false)} />}
+      {showSettings && <SettingsModal settings={settings} onSave={(s)=>{persistSettings(s); setShowSettings(false);}} onClose={()=>setShowSettings(false)}
+        github={github} onSaveGithub={persistGithub} state={state} onLoadState={(s)=>persist(s)} />}
     </div>
   );
 }
@@ -491,13 +531,54 @@ function EditModal({ question, onClose, onSave }){
   );
 }
 
-function SettingsModal({ settings, onSave, onClose }){
+function SettingsModal({ settings, onSave, onClose, github, onSaveGithub, state, onLoadState }){
   const [apiKey,setApiKey]=useState(settings.apiKey||"");
   const [model,setModel]=useState(settings.model||"claude-haiku-4-5-20251001");
+  const [ghToken,setGhToken]=useState(github.token||"");
+  const [ghOwner,setGhOwner]=useState(github.owner||"");
+  const [ghRepo,setGhRepo]=useState(github.repo||"");
+  const [syncMsg,setSyncMsg]=useState(null);
+  const [syncing,setSyncing]=useState(false);
+  const fileRef = React.createRef();
+
+  const doSaveGithub = () => { onSaveGithub({token:ghToken,owner:ghOwner,repo:ghRepo}); setSyncMsg({ok:true,msg:"GitHub settings saved."}); };
+
+  const doPush = async () => {
+    if (!ghToken||!ghOwner||!ghRepo){ setSyncMsg({ok:false,msg:"Fill in all GitHub fields first."}); return; }
+    setSyncing(true); setSyncMsg(null);
+    try {
+      await pushToGithub({token:ghToken,owner:ghOwner,repo:ghRepo}, state);
+      setSyncMsg({ok:true,msg:"Pushed to GitHub successfully."});
+    } catch(e){ setSyncMsg({ok:false,msg:`Push failed: ${e.message}`}); }
+    finally { setSyncing(false); }
+  };
+
+  const doPull = async () => {
+    if (!ghOwner||!ghRepo){ setSyncMsg({ok:false,msg:"Fill in owner and repo fields."}); return; }
+    setSyncing(true); setSyncMsg(null);
+    try {
+      const data = await pullFromGithub({token:ghToken,owner:ghOwner,repo:ghRepo});
+      if (!data){ setSyncMsg({ok:false,msg:"No user-data.json found in the repo yet. Push first."}); return; }
+      onLoadState(data); setSyncMsg({ok:true,msg:"Pulled from GitHub and loaded."});
+    } catch(e){ setSyncMsg({ok:false,msg:`Pull failed: ${e.message}`}); }
+    finally { setSyncing(false); }
+  };
+
+  const doImport = (e) => {
+    const file = e.target.files[0]; if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try { const data = JSON.parse(ev.target.result); onLoadState(data); setSyncMsg({ok:true,msg:"Imported successfully."}); }
+      catch(_){ setSyncMsg({ok:false,msg:"Invalid JSON file."}); }
+    };
+    reader.readAsText(file);
+  };
+
   return (
     <div style={S.overlay} onClick={onClose}>
       <div style={S.modal} onClick={(e)=>e.stopPropagation()}>
         <div style={S.modalHead}><span style={S.modalTitle}>Settings</span><button style={S.closeBtn} onClick={onClose}>✕</button></div>
+
         <p style={{fontSize:12.5,lineHeight:1.6,color:"rgba(255,255,255,0.6)",margin:"0 0 6px"}}>
           The <b>Regenerate</b> feature calls Anthropic's API. Paste your own API key to enable it. The key is stored only in this browser (localStorage) and sent directly to Anthropic.
         </p>
@@ -510,8 +591,46 @@ function SettingsModal({ settings, onSave, onClose }){
           Don't publish this file with your key embedded — anyone could use it.
         </p>
         <div style={{display:"flex",gap:10,marginTop:16}}>
-          <button style={{...S.primary,flex:1}} onClick={()=>onSave({apiKey,model})}>Save</button>
+          <button style={{...S.primary,flex:1}} onClick={()=>onSave({apiKey,model})}>Save API Settings</button>
           <button style={S.cancelBtn} onClick={onClose}>Cancel</button>
+        </div>
+
+        <div style={S.divider} />
+
+        <span style={S.modalTitle}>GitHub Sync</span>
+        <p style={{fontSize:12.5,lineHeight:1.6,color:"rgba(255,255,255,0.6)",margin:"6px 0 6px"}}>
+          Push your edits, generated questions, and saved/deleted lists to your GitHub repo as <code style={{color:"#f0a44c"}}>user-data.json</code>. Pull to load them on another device.
+        </p>
+        <label style={S.lbl}>GitHub personal access token</label>
+        <input style={S.input} type="password" value={ghToken} onChange={(e)=>setGhToken(e.target.value.trim())} placeholder="ghp_…" autoComplete="off" />
+        <div style={{display:"flex",gap:10}}>
+          <div style={{flex:1}}><label style={S.lbl}>Repo owner</label>
+            <input style={S.input} value={ghOwner} onChange={(e)=>setGhOwner(e.target.value.trim())} placeholder="Ethan11San" /></div>
+          <div style={{flex:1}}><label style={S.lbl}>Repo name</label>
+            <input style={S.input} value={ghRepo} onChange={(e)=>setGhRepo(e.target.value.trim())} placeholder="Claude-Quiz" /></div>
+        </div>
+        <p style={{fontSize:11,lineHeight:1.55,color:"rgba(255,255,255,0.4)",margin:"10px 0 0"}}>
+          Create a token at github.com → Settings → Developer settings → Personal access tokens → Fine-grained tokens.
+          Give it <b>Contents: Read and write</b> permission for your quiz repo only.
+        </p>
+        <div style={{display:"flex",gap:8,marginTop:12,flexWrap:"wrap"}}>
+          <button style={{...S.primary,flex:"1 1 auto"}} disabled={syncing} onClick={()=>{ doSaveGithub(); doPush(); }}>{syncing?"Pushing…":"Push to GitHub"}</button>
+          <button style={{...S.ghostBtn,flex:"1 1 auto"}} disabled={syncing} onClick={()=>{ doSaveGithub(); doPull(); }}>{syncing?"Pulling…":"Pull from GitHub"}</button>
+          <button style={{...S.ghostBtn,flex:"1 1 auto"}} onClick={doSaveGithub}>Save GitHub Settings</button>
+        </div>
+
+        {syncMsg && <div style={{...S.errBox,...(syncMsg.ok?{color:"#5fd38a",background:"rgba(95,211,138,0.1)",borderColor:"rgba(95,211,138,0.3)"}:{}),marginTop:10}}>{syncMsg.msg}</div>}
+
+        <div style={S.divider} />
+
+        <span style={S.modalTitle}>Export / Import</span>
+        <p style={{fontSize:12.5,lineHeight:1.6,color:"rgba(255,255,255,0.6)",margin:"6px 0 6px"}}>
+          Download your data as a JSON file for backup, or import a previously exported file.
+        </p>
+        <div style={{display:"flex",gap:8,marginTop:8}}>
+          <button style={{...S.ghostBtn,flex:1}} onClick={()=>exportData(state)}>Export JSON</button>
+          <button style={{...S.ghostBtn,flex:1}} onClick={()=>fileRef.current.click()}>Import JSON</button>
+          <input ref={fileRef} type="file" accept=".json" style={{display:"none"}} onChange={doImport} />
         </div>
       </div>
     </div>
@@ -633,6 +752,7 @@ const S = {
   radio:{flexShrink:0,width:30,height:30,borderRadius:8,border:"1px solid rgba(255,255,255,0.18)",background:"rgba(255,255,255,0.04)",color:"rgba(255,255,255,0.6)",fontWeight:700,fontSize:12,cursor:"pointer"},
   radioOn:{background:"#5fd38a",borderColor:"#5fd38a",color:"#08130c"},
   cancelBtn:{background:"rgba(255,255,255,0.05)",border:"1px solid rgba(255,255,255,0.12)",color:"#e9e6df",borderRadius:10,padding:"12px 20px",fontSize:13,cursor:"pointer"},
+  divider:{height:1,background:"rgba(255,255,255,0.1)",margin:"20px 0 16px"},
 };
 
 ReactDOM.createRoot(document.getElementById("root")).render(<App />);
