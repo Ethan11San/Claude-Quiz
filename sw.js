@@ -1,5 +1,5 @@
 // Pocket Checkride service worker — network-first so updates propagate.
-const CACHE = 'pocket-checkride-v2';
+const CACHE = 'pocket-checkride-v3';
 const ASSETS = ['./', './index.html', './manifest.webmanifest', './icon.svg'];
 
 self.addEventListener('install', (e) => {
