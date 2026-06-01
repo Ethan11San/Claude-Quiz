@@ -1,0 +1,14 @@
+{
+  "name": "Pocket Checkride — Part 61 PPL",
+  "short_name": "Checkride",
+  "description": "FAA Part 61 private pilot knowledge quiz with live eCFR links.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0d1117",
+  "theme_color": "#0d1117",
+  "icons": [
+    { "src": "./icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
