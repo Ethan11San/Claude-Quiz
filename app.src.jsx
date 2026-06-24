@@ -1,4 +1,4 @@
-const { useState, useEffect, useCallback, useMemo } = React;
+const { useState, useEffect, useCallback, useMemo, useRef } = React;
 
 // ════════════════════════════════════════════════════════════
 //  PART 61 · PRIVATE PILOT + INSTRUMENT — Pocket Checkride (standalone)
@@ -8,6 +8,7 @@ const { useState, useEffect, useCallback, useMemo } = React;
 
 const STORE_KEY = "part61ppl:v2";
 const SETTINGS_KEY = "part61ppl:settings";
+const MASTERY_BOX = 3; // Leitner box at/above which a question counts as "mastered"
 
 const regUrl = (sec, quote) => {
   const base = `https://www.ecfr.gov/current/title-14/section-${sec}`;
@@ -176,12 +177,41 @@ const BASE = [
   { id:"b25", reg:"61.57", topic:"Recency", q:"To carry passengers at NIGHT, the 90-day takeoffs/landings must be:",
     choices:["Touch-and-go","To a full stop, 1 hr after sunset to 1 hr before sunrise","At a tower","With a CFI aboard"], answer:1,
     explain:"§61.57(b): for night passenger carriage, 3 takeoffs and 3 landings to a full stop during the period 1 hour after sunset to 1 hour before sunrise.", quote:"1 hour after sunset" },
+
+  { id:"b26", reg:"61.56", topic:"Flight Review", q:"How often must a pilot complete a flight review to act as PIC?",
+    choices:["Every 12 calendar months","Every 24 calendar months","Every 36 calendar months","Only once, before the checkride"], answer:1,
+    explain:"§61.56(c): no person may act as PIC unless, within the preceding 24 calendar months, they completed a flight review and received a logbook endorsement.", quote:"24 calendar months" },
+  { id:"b27", reg:"61.56", topic:"Flight Review", q:"A flight review must consist of a minimum of:",
+    choices:["1 hour of flight training and 1 hour of ground training","2 hours of flight training","3 takeoffs and landings","A knowledge test"], answer:0,
+    explain:"§61.56(a): a minimum of 1 hour of flight training and 1 hour of ground training.", quote:"1 hour of flight training and 1 hour of ground training" },
+  { id:"b28", reg:"61.31", topic:"Endorsements", q:"A high-performance airplane, requiring a one-time endorsement, is one with an engine of:",
+    choices:["More than 180 horsepower","More than 200 horsepower","More than 230 horsepower","Retractable landing gear"], answer:1,
+    explain:"§61.31(f): a high-performance airplane has an engine of more than 200 horsepower and requires a one-time endorsement.", quote:"more than 200 horsepower" },
+  { id:"b29", reg:"61.31", topic:"Endorsements", q:"A complex airplane is defined as one having:",
+    choices:["More than 200 horsepower","Retractable landing gear, flaps, and a controllable pitch propeller","A constant-speed propeller only","Two engines"], answer:1,
+    explain:"§61.31(e): a complex airplane has retractable landing gear, flaps, and a controllable pitch propeller (seaplanes: flaps and a controllable pitch propeller).", quote:"retractable landing gear, flaps, and a controllable pitch propeller" },
+  { id:"b30", reg:"61.23", topic:"Medical", q:"For a pilot under age 40 at the exam, a third-class medical certificate is valid for:",
+    choices:["12 calendar months","24 calendar months","48 calendar months","60 calendar months"], answer:3,
+    explain:"§61.23(d): a third-class medical for a person who has not reached age 40 on the date of the exam is valid for 60 calendar months.", quote:"60 calendar months" },
+  { id:"b31", reg:"61.23", topic:"Medical", q:"For a pilot age 40 or older at the exam, a third-class medical certificate is valid for:",
+    choices:["12 calendar months","24 calendar months","36 calendar months","60 calendar months"], answer:1,
+    explain:"§61.23(d): for a person who has reached age 40, the third-class medical is valid for 24 calendar months.", quote:"24 calendar months" },
+  { id:"b32", reg:"61.60", topic:"Change of Address", q:"After a permanent change of mailing address, a certificate holder may not exercise certificate privileges after how long without notifying the FAA?",
+    choices:["10 days","30 days","60 days","90 days"], answer:1,
+    explain:"§61.60: a certificate holder who changes permanent mailing address may not exercise certificate privileges after 30 days unless they notified the FAA in writing.", quote:"30 days" },
+  { id:"b33", reg:"61.51", topic:"Logging", q:"Under §61.51, a pilot is required to log which flight time?",
+    choices:["Every flight ever flown","Only time used to meet certificate, rating, or recent-experience requirements","Only night flights","Only solo flights"], answer:1,
+    explain:"§61.51(a): each person must document the training and aeronautical experience used to meet requirements for a certificate, rating, or flight review, plus recent flight experience.", quote:"aeronautical experience used to meet" },
+  { id:"b34", reg:"61.15", topic:"Drug & Alcohol", q:"After a motor-vehicle action for drugs or alcohol, a pilot must send a written report to the FAA within:",
+    choices:["24 hours","30 days","60 days","6 months"], answer:2,
+    explain:"§61.15(e): a written report of the motor vehicle action must reach the FAA Civil Aviation Registry not later than 60 days after the action.", quote:"60 days" },
 ];
 
 // ── localStorage persistence ────────────────────────────────
+const DEFAULT_STATE = { saved:[], deleted:[], edits:{}, generated:[], stats:{}, streak:{ last:null, count:0 } };
 function loadState(){
-  try { const r = localStorage.getItem(STORE_KEY); if (r) return JSON.parse(r); } catch(e){}
-  return { saved:[], deleted:[], edits:{}, generated:[] };
+  try { const r = localStorage.getItem(STORE_KEY); if (r) return { ...DEFAULT_STATE, ...JSON.parse(r) }; } catch(e){}
+  return { ...DEFAULT_STATE };
 }
 function saveState(s){ try { localStorage.setItem(STORE_KEY, JSON.stringify(s)); } catch(e){} }
 function loadSettings(){
@@ -196,6 +226,56 @@ const shuffle = (arr) => {
   return a;
 };
 
+const ymd = (d) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+const haptic = (ok) => { try { if (navigator.vibrate) navigator.vibrate(ok ? 14 : [12,40,12]); } catch(_){} };
+
+function updateStreak(streak){
+  const s = streak || { last:null, count:0 };
+  const today = ymd(new Date());
+  if (s.last === today) return s;
+  const yest = ymd(new Date(Date.now() - 86400000));
+  return { last: today, count: s.last === yest ? (s.count||0)+1 : 1 };
+}
+
+// Spaced-repetition ordering: unseen first, then lowest Leitner box, random tiebreak.
+const duePriority = (s) => (!s || !s.seen) ? -1 : (s.box||0);
+
+function buildSession(questions, stats, { mode, topic, length }){
+  let pool = (topic && topic !== "__all") ? questions.filter((q)=>q.topic===topic) : [...questions];
+  if (mode === "missed") pool = pool.filter((q)=>{ const s=stats[q.id]; return s && s.wrong>0; });
+  if (mode === "smart"){
+    pool = shuffle(pool).map((q)=>({ q, k:duePriority(stats[q.id]) }))
+                        .sort((a,b)=>a.k-b.k).map((x)=>x.q);
+  } else {
+    pool = shuffle(pool);
+  }
+  if (length && length>0 && length<pool.length) pool = pool.slice(0, length);
+  return pool;
+}
+
+function computeStats(questions, stats){
+  let attempted=0, correct=0, wrong=0, mastered=0, due=0;
+  const byTopic = {};
+  for (const q of questions){
+    const s = stats[q.id];
+    const t = byTopic[q.topic] || (byTopic[q.topic] = { correct:0, wrong:0, seen:0, total:0, mastered:0 });
+    t.total++;
+    if (s && s.seen){
+      attempted++; correct+=s.correct; wrong+=s.wrong; t.correct+=s.correct; t.wrong+=s.wrong; t.seen++;
+      if ((s.box||0) >= MASTERY_BOX){ mastered++; t.mastered++; } else due++;
+    } else { due++; }
+  }
+  const ans = correct + wrong;
+  return { attempted, correct, wrong, mastered, due, acc: ans>0 ? Math.round(correct/ans*100) : 0, total:questions.length, byTopic };
+}
+
+const MODES = {
+  smart:  { label:"Smart Review", icon:"◎", desc:"Weak & new questions first" },
+  all:    { label:"Practice",     icon:"✈", desc:"Every question, shuffled" },
+  missed: { label:"Missed Only",  icon:"✕", desc:"Questions you've gotten wrong" },
+  exam:   { label:"Exam",         icon:"▤", desc:"FAA-style, score at the end" },
+};
+
 function App(){
   const [tab, setTab] = useState("quiz");
   const [section, setSection] = useState("ppl");
@@ -203,6 +283,7 @@ function App(){
   const [settings, setSettings] = useState(() => loadSettings());
   const [editing, setEditing] = useState(null);
   const [showSettings, setShowSettings] = useState(false);
+  const [quizSession, setQuizSession] = useState(null);
 
   const persist = useCallback((updater) => {
     setState((prev) => { const next = typeof updater==="function"?updater(prev):updater; saveState(next); return next; });
@@ -222,6 +303,39 @@ function App(){
   const savedQuestions = questions.filter((q)=>state.saved.includes(q.id));
   const sec = SECTIONS[section];
 
+  const recordAnswer = useCallback((id, correct) => {
+    persist((p) => {
+      const prev = p.stats[id] || { seen:0, correct:0, wrong:0, box:0, lastResult:null, lastTs:0 };
+      const box = correct ? Math.min((prev.box||0)+1, 5) : 0;
+      const stat = {
+        seen: prev.seen+1, correct: prev.correct+(correct?1:0), wrong: prev.wrong+(correct?0:1),
+        box, lastResult: correct?1:0, lastTs: Date.now(),
+      };
+      return { ...p, stats: { ...p.stats, [id]: stat }, streak: updateStreak(p.streak) };
+    });
+  }, [persist]);
+
+  const startQuiz = useCallback((config) => {
+    const pool = buildSession(questions, state.stats, config);
+    setQuizSession({ config, pool, instant: config.instant !== false,
+      label: `${sec.short} · ${MODES[config.mode]?.label||"Quiz"}${config.topic && config.topic!=="__all" ? " · "+config.topic : ""}` });
+    setTab("quiz");
+  }, [questions, state.stats, sec]);
+
+  const restartQuiz = useCallback(() => {
+    setQuizSession((s)=> s ? { ...s, pool: buildSession(questions, state.stats, s.config) } : s);
+  }, [questions, state.stats]);
+
+  const resetProgress = useCallback(() => {
+    persist((p)=>({ ...p, stats:{}, streak:{ last:null, count:0 } }));
+  }, [persist]);
+
+  const importData = useCallback((obj) => {
+    persist(() => ({ ...DEFAULT_STATE, ...obj }));
+  }, [persist]);
+
+  const switchSection = (key) => { setSection(key); setTab("quiz"); setQuizSession(null); };
+
   return (
     <div style={S.app}>
       <style>{CSS}</style>
@@ -236,28 +350,33 @@ function App(){
       <div style={S.sectionBar}>
         {Object.values(SECTIONS).map((s) => (
           <button key={s.key} style={{...S.sectionBtn,...(section===s.key?S.sectionBtnActive:{})}}
-            onClick={()=>{ setSection(s.key); setTab("quiz"); }}>{s.label}</button>
+            onClick={()=>switchSection(s.key)}>{s.label}</button>
         ))}
       </div>
 
       <main style={S.main}>
-        {tab==="quiz" && <Quiz pool={questions} scopeLabel={`${sec.short} · All questions`} />}
+        {tab==="quiz" && (quizSession
+          ? <Quiz pool={quizSession.pool} scopeLabel={quizSession.label} instant={quizSession.instant} preserveOrder
+              onAnswer={recordAnswer} onRestart={restartQuiz} onExit={()=>setQuizSession(null)} />
+          : <QuizHome questions={questions} stats={state.stats} streak={state.streak} sec={sec} onStart={startQuiz} />)}
         {tab==="saved" && (savedQuestions.length
-          ? <Quiz pool={savedQuestions} scopeLabel={`${sec.short} · Saved questions`} />
+          ? <Quiz pool={savedQuestions} scopeLabel={`${sec.short} · Saved questions`} instant onAnswer={recordAnswer} />
           : <Empty glyph="★" title="No saved questions yet" body="Tap the star on any question in the Library to build a focused study set, then drill it here." />)}
+        {tab==="stats" && <Stats questions={questions} stats={state.stats} streak={state.streak} sec={sec} onDrill={startQuiz} onReset={resetProgress} />}
         {tab==="library" && <Library questions={questions} state={state} persist={persist} onEdit={setEditing} settings={settings} openSettings={()=>setShowSettings(true)} section={section} />}
       </main>
 
       <nav style={S.tabbar}>
         <TabBtn active={tab==="quiz"} onClick={()=>setTab("quiz")} icon="✈" label="Quiz" />
         <TabBtn active={tab==="saved"} onClick={()=>setTab("saved")} icon="★" label={`Saved${savedQuestions.length?` ${savedQuestions.length}`:""}`} />
+        <TabBtn active={tab==="stats"} onClick={()=>setTab("stats")} icon="◷" label="Stats" />
         <TabBtn active={tab==="library"} onClick={()=>setTab("library")} icon="≡" label="Library" />
       </nav>
 
       {editing && <EditModal question={editing} onClose={()=>setEditing(null)}
         onSave={(patch)=>{ persist((p)=>({...p, edits:{...p.edits,[editing.id]:{...p.edits[editing.id],...patch}}})); setEditing(null); }} />}
 
-      {showSettings && <SettingsModal settings={settings} onSave={(s)=>{persistSettings(s); setShowSettings(false);}} onClose={()=>setShowSettings(false)} />}
+      {showSettings && <SettingsModal settings={settings} state={state} onSave={(s)=>{persistSettings(s); setShowSettings(false);}} onClose={()=>setShowSettings(false)} onImport={importData} />}
     </div>
   );
 }
@@ -267,8 +386,90 @@ function RegLink({ reg, quote, style }){
     onClick={(e)=>e.stopPropagation()} title={quote?`Jump to: "${quote}"`:`Open §${reg}`}>§{reg} ↗</a>);
 }
 
-function Quiz({ pool, scopeLabel }){
-  const [order, setOrder] = useState(()=>shuffle(pool));
+function QuizHome({ questions, stats, streak, sec, onStart }){
+  const topics = useMemo(()=>Array.from(new Set(questions.map((q)=>q.topic))).sort(), [questions]);
+  const summary = useMemo(()=>computeStats(questions, stats), [questions, stats]);
+  const missedCount = useMemo(()=>questions.filter((q)=>{ const s=stats[q.id]; return s && s.wrong>0; }).length, [questions, stats]);
+
+  const [mode, setMode] = useState("smart");
+  const [topic, setTopic] = useState("__all");
+  const [length, setLength] = useState(10);
+
+  const previewCount = useMemo(()=>buildSession(questions, stats, { mode, topic, length:0 }).length, [questions, stats, mode, topic]);
+  const planned = length>0 ? Math.min(length, previewCount) : previewCount;
+
+  const pickMode = (m) => { setMode(m); if (m==="exam" && length>0 && length<20) setLength(20); };
+
+  const modeDesc = (m) => {
+    if (m==="smart") return `Weak & new first · ${summary.due} to review`;
+    if (m==="all") return `Every question, shuffled · ${summary.total}`;
+    if (m==="missed") return missedCount ? `${missedCount} you've missed` : "Nothing missed yet";
+    return "FAA-style · no feedback until the end";
+  };
+
+  return (
+    <div className="fade">
+      <div style={S.homeStrip}>
+        <HomeStat value={`${streak.count||0}`} label={streak.count===1?"day streak":"day streak"} accent="#f0a44c" glyph="🔥" />
+        <HomeStat value={`${summary.acc}%`} label="accuracy" accent="#7fd1f0" />
+        <HomeStat value={`${summary.mastered}/${summary.total}`} label="mastered" accent="#5fd38a" />
+      </div>
+
+      <div style={S.homeHeading}>Start a session</div>
+      <div style={S.modeGrid}>
+        {Object.keys(MODES).map((m)=>{
+          const disabled = m==="missed" && missedCount===0;
+          const active = mode===m;
+          return (
+            <button key={m} disabled={disabled}
+              style={{...S.modeCard,...(active?S.modeCardActive:{}),...(disabled?S.modeCardDisabled:{})}}
+              onClick={()=>!disabled && pickMode(m)}>
+              <span style={{...S.modeIcon,...(active?{color:"#f0a44c"}:{})}}>{MODES[m].icon}</span>
+              <span style={S.modeTitle}>{MODES[m].label}</span>
+              <span style={S.modeDesc}>{modeDesc(m)}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      <label style={S.lbl}>Topic</label>
+      <select style={S.select} value={topic} onChange={(e)=>setTopic(e.target.value)}>
+        <option value="__all">All topics</option>
+        {topics.map((t)=><option key={t} value={t}>{t}</option>)}
+      </select>
+
+      <label style={S.lbl}>Length</label>
+      <div style={S.segRow}>
+        {[10,20,0].map((n)=>(
+          <button key={n} style={{...S.segBtn,...(length===n?S.segBtnActive:{})}} onClick={()=>setLength(n)}>
+            {n===0?"All":n}
+          </button>
+        ))}
+      </div>
+
+      <button style={{...S.primary,width:"100%",marginTop:18,padding:"14px",opacity:planned?1:0.5}}
+        disabled={!planned}
+        onClick={()=>onStart({ mode, topic, length, instant: mode!=="exam" })}>
+        {mode==="exam"?"Begin exam":"Start"} · {planned} question{planned===1?"":"s"} →
+      </button>
+      <div style={S.homeHint}>
+        {planned ? "Tip: on a keyboard, press 1–4 or A–D to answer, Enter for next." : "No questions match — pick another topic or mode."}
+      </div>
+    </div>
+  );
+}
+
+function HomeStat({ value, label, accent, glyph }){
+  return (
+    <div style={S.homeStat}>
+      <div style={{...S.homeStatValue,color:accent}}>{glyph?<span style={{fontSize:14,marginRight:4}}>{glyph}</span>:null}{value}</div>
+      <div style={S.homeStatLabel}>{label}</div>
+    </div>
+  );
+}
+
+function Quiz({ pool, scopeLabel, instant=true, preserveOrder=false, onAnswer, onRestart, onExit }){
+  const [order, setOrder] = useState(()=> preserveOrder ? [...pool] : shuffle(pool));
   const [idx, setIdx] = useState(0);
   const [picked, setPicked] = useState(null);
   const [locked, setLocked] = useState(false);
@@ -276,18 +477,58 @@ function Quiz({ pool, scopeLabel }){
   const [log, setLog] = useState([]);
   const [done, setDone] = useState(false);
 
-  useEffect(()=>{ setOrder(shuffle(pool)); setIdx(0); setPicked(null); setLocked(false); setScore(0); setLog([]); setDone(false); }, [pool]);
-  if (!order.length) return null;
+  useEffect(()=>{ setOrder(preserveOrder?[...pool]:shuffle(pool)); setIdx(0); setPicked(null); setLocked(false); setScore(0); setLog([]); setDone(false); }, [pool]);
+
   const q = order[idx];
 
+  const commit = useCallback((pick) => {
+    const correct = pick===q.answer;
+    if (correct) setScore((s)=>s+1);
+    setLog((l)=>[...l, { q, picked:pick, correct }]);
+    if (onAnswer) onAnswer(q.id, correct);
+    haptic(correct);
+    return correct;
+  }, [q, onAnswer]);
+
   const choose = (i) => {
-    if (locked) return;
-    setPicked(i); setLocked(true);
-    const correct = i===q.answer; if (correct) setScore((s)=>s+1);
-    setLog((l)=>[...l,{reg:q.reg,topic:q.topic,correct,quote:q.quote}]);
+    if (instant){
+      if (locked) return;
+      setPicked(i); setLocked(true); commit(i);
+    } else {
+      setPicked(i); // exam: selectable until Next
+    }
   };
-  const next = () => { if (idx+1>=order.length) setDone(true); else { setIdx((n)=>n+1); setPicked(null); setLocked(false); } };
-  const restart = () => { setOrder(shuffle(pool)); setIdx(0); setPicked(null); setLocked(false); setScore(0); setLog([]); setDone(false); };
+
+  const next = () => {
+    if (!instant){ if (picked==null) return; commit(picked); }
+    if (idx+1>=order.length) setDone(true);
+    else { setIdx((n)=>n+1); setPicked(null); setLocked(false); }
+  };
+
+  const restart = () => {
+    if (onRestart){ onRestart(); return; }
+    setOrder(shuffle(pool)); setIdx(0); setPicked(null); setLocked(false); setScore(0); setLog([]); setDone(false);
+  };
+
+  // Keyboard support
+  useEffect(()=>{
+    const onKey = (e) => {
+      if (e.target && /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) return;
+      if (done){ if (e.key==="Enter" || e.key.toLowerCase()==="r") restart(); return; }
+      if (!q) return;
+      const num = "123456".indexOf(e.key);
+      if (num>=0 && num<q.choices.length){ choose(num); return; }
+      const alpha = "abcdef".indexOf(e.key.toLowerCase());
+      if (alpha>=0 && alpha<q.choices.length){ choose(alpha); return; }
+      if (e.key==="Enter" || e.key==="ArrowRight"){
+        if ((instant && locked) || (!instant && picked!=null)){ e.preventDefault(); next(); }
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return ()=>window.removeEventListener("keydown", onKey);
+  }, [q, idx, order, locked, picked, done, instant]);
+
+  if (!order.length) return null;
 
   if (done){
     const pct = Math.round((score/order.length)*100); const pass = pct>=80;
@@ -296,38 +537,81 @@ function Quiz({ pool, scopeLabel }){
         <Ring pct={pct} pass={pass} score={score} total={order.length} />
         <h2 style={S.resultTitle}>{pass?"Checkride Ready":"Keep Studying"}</h2>
         <p style={S.resultSub}>{pass?"Strong command of Part 61. Tap any reg below to jump to the highlighted source text.":"Close the gaps below — each link highlights the exact regulation."}</p>
-        <div style={S.reviewList}>
-          {log.map((a,i)=>(
-            <div key={i} style={S.reviewRow}>
-              <span style={{...S.reviewMark,color:a.correct?"#5fd38a":"#f0775c"}}>{a.correct?"✓":"✕"}</span>
-              <RegLink reg={a.reg} quote={a.quote} style={S.reviewReg} />
-              <span style={S.reviewTopic}>{a.topic}</span>
-            </div>
-          ))}
+        {instant ? (
+          <div style={S.reviewList}>
+            {log.map((a,i)=>(
+              <div key={i} style={S.reviewRow}>
+                <span style={{...S.reviewMark,color:a.correct?"#5fd38a":"#f0775c"}}>{a.correct?"✓":"✕"}</span>
+                <RegLink reg={a.q.reg} quote={a.q.quote} style={S.reviewReg} />
+                <span style={S.reviewTopic}>{a.q.topic}</span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div style={S.examReview}>
+            {log.map((a,i)=>(
+              <div key={i} style={S.examItem}>
+                <div style={S.examItemHead}>
+                  <span style={{...S.reviewMark,color:a.correct?"#5fd38a":"#f0775c"}}>{a.correct?"✓":"✕"}</span>
+                  <RegLink reg={a.q.reg} quote={a.q.quote} style={S.regTagSm} />
+                  <span style={S.examItemTopic}>{a.q.topic}</span>
+                </div>
+                <div style={S.examItemQ}>{a.q.q}</div>
+                {a.q.choices.map((c,ci)=>{
+                  const isAns=ci===a.q.answer, isPick=ci===a.picked;
+                  const st = isAns ? S.examChoiceCorrect : (isPick ? S.examChoiceWrong : null);
+                  return (<div key={ci} style={{...S.examChoice,...(st||{})}}>
+                    <span style={S.examChoiceKey}>{String.fromCharCode(65+ci)}</span>{c}
+                    {isAns&&<span style={{marginLeft:"auto",color:"#5fd38a"}}>✓</span>}
+                    {isPick&&!isAns&&<span style={{marginLeft:"auto",color:"#f0775c"}}>✕</span>}
+                  </div>);
+                })}
+                {a.q.explain && <div style={S.examItemExplain}>{a.q.explain}</div>}
+              </div>
+            ))}
+          </div>
+        )}
+        <div style={{display:"flex",gap:10,justifyContent:"center",flexWrap:"wrap"}}>
+          <button style={S.primary} onClick={restart}>↻ Run It Again</button>
+          {onExit && <button style={S.cancelBtn} onClick={onExit}>⟵ Change setup</button>}
         </div>
-        <button style={S.primary} onClick={restart}>↻ Run It Again</button>
       </div>
     );
   }
 
+  const progress = ((instant && locked ? idx+1 : idx) / order.length) * 100;
+
   return (
     <div>
-      <div style={S.quizTop}><span style={S.scope}>{scopeLabel}</span><span style={S.counter}>{idx+1} / {order.length}</span></div>
-      <div style={S.track}><div style={{...S.fill,width:`${(idx/order.length)*100}%`}} /></div>
+      <div style={S.quizTop}>
+        <span style={S.scope}>
+          {onExit && <button style={S.backBtn} onClick={onExit} title="Back to setup">‹</button>}
+          {scopeLabel}
+        </span>
+        <span style={S.counter}>{idx+1} / {order.length}</span>
+      </div>
+      <div style={S.track}><div style={{...S.fill,width:`${progress}%`}} /></div>
       <div className="fade" key={q.id} style={S.card}>
-        <div style={S.cardHead}><span style={S.topicTag}>{q.topic}</span><RegLink reg={q.reg} quote={q.quote} style={S.regTag} /></div>
+        <div style={S.cardHead}><span style={S.topicTag}>{q.topic}</span>{instant && <RegLink reg={q.reg} quote={q.quote} style={S.regTag} />}</div>
         <h2 style={S.question}>{q.q}</h2>
         <div style={S.choices}>
           {q.choices.map((c,i)=>{
             const isAns=i===q.answer, isPick=i===picked; let cls="choice";
-            if (locked&&isAns) cls+=" correct"; else if (locked&&isPick) cls+=" wrong"; else if (locked) cls+=" dim";
-            return (<button key={i} className={cls} disabled={locked} onClick={()=>choose(i)}>
+            if (instant){
+              if (locked&&isAns) cls+=" correct"; else if (locked&&isPick) cls+=" wrong"; else if (locked) cls+=" dim";
+            } else if (isPick){ cls+=" sel"; }
+            return (<button key={i} className={cls} disabled={instant&&locked} onClick={()=>choose(i)}>
               <span className="ckey">{String.fromCharCode(65+i)}</span><span style={{flex:1}}>{c}</span>
-              {locked&&isAns&&<span className="cmark">✓</span>}{locked&&isPick&&!isAns&&<span className="cmark">✕</span>}
+              {instant&&locked&&isAns&&<span className="cmark">✓</span>}{instant&&locked&&isPick&&!isAns&&<span className="cmark">✕</span>}
             </button>);
           })}
         </div>
-        {locked && (
+        {!instant && (
+          <button style={{...S.primary,marginTop:18,opacity:picked==null?0.5:1}} disabled={picked==null} onClick={next}>
+            {idx+1>=order.length?"Finish exam →":"Next →"}
+          </button>
+        )}
+        {instant && locked && (
           <div className="reveal" style={S.explain}>
             <div style={S.explainHead}>
               <span style={{color:picked===q.answer?"#5fd38a":"#f0a44c",fontWeight:700,letterSpacing:1}}>{picked===q.answer?"CORRECT":"REVIEW"}</span>
@@ -340,6 +624,73 @@ function Quiz({ pool, scopeLabel }){
       </div>
     </div>
   );
+}
+
+function Stats({ questions, stats, streak, sec, onDrill, onReset }){
+  const data = useMemo(()=>computeStats(questions, stats), [questions, stats]);
+  const [confirmReset, setConfirmReset] = useState(false);
+  const topics = useMemo(()=>{
+    return Object.keys(data.byTopic).map((t)=>{
+      const d = data.byTopic[t]; const ans = d.correct+d.wrong;
+      return { topic:t, ...d, ans, acc: ans>0 ? Math.round(d.correct/ans*100) : null };
+    }).sort((a,b)=>{
+      if (a.acc==null && b.acc==null) return a.topic.localeCompare(b.topic);
+      if (a.acc==null) return 1; if (b.acc==null) return -1;
+      return a.acc - b.acc; // weakest first
+    });
+  }, [data]);
+
+  const barColor = (acc) => acc==null ? "rgba(255,255,255,0.15)" : acc>=80 ? "#5fd38a" : acc>=60 ? "#f0a44c" : "#f0775c";
+
+  if (data.attempted===0){
+    return <Empty glyph="◷" title="No progress yet" body="Run a quiz and your accuracy, mastery, and weakest topics will show up here to guide your studying." />;
+  }
+
+  return (
+    <div className="fade">
+      <div style={S.statsHead}>Your Progress · {sec.short}</div>
+
+      <div style={S.statCardRow}>
+        <Ring pct={Math.round((data.mastered/data.total)*100)} pass={data.mastered/data.total>=0.8} score={data.mastered} total={data.total} small />
+        <div style={S.statCol}>
+          <StatLine value={`🔥 ${streak.count||0}`} label="day study streak" />
+          <StatLine value={`${data.acc}%`} label={`overall accuracy · ${data.correct+data.wrong} answered`} />
+          <StatLine value={`${data.attempted}/${data.total}`} label="questions attempted" />
+        </div>
+      </div>
+
+      <div style={S.statsSubhead}>By topic — weakest first</div>
+      {topics.map((t)=>(
+        <div key={t.topic} style={S.topicRow}>
+          <div style={S.topicTop}>
+            <span style={S.topicName}>{t.topic}</span>
+            <span style={{...S.topicAcc,color:barColor(t.acc)}}>{t.acc==null?"new":`${t.acc}%`}</span>
+            <button style={S.drillBtn} onClick={()=>onDrill({ mode:"all", topic:t.topic, length:0, instant:true })}>Drill →</button>
+          </div>
+          <div style={S.topicBar}><div style={{...S.topicBarFill,width:`${t.acc==null?0:t.acc}%`,background:barColor(t.acc)}} /></div>
+          <div style={S.topicMeta}>{t.seen}/{t.total} seen · {t.mastered} mastered</div>
+        </div>
+      ))}
+
+      <div style={{marginTop:22,textAlign:"center"}}>
+        {confirmReset ? (
+          <div style={S.resetConfirm}>
+            <span style={{fontSize:12.5,color:"#ffb8a8"}}>Erase all progress, mastery & streak?</span>
+            <div style={{display:"flex",gap:8,marginTop:8,justifyContent:"center"}}>
+              <button style={{...S.actBtn,...S.actDanger,flex:"0 0 auto"}} onClick={()=>{ onReset(); setConfirmReset(false); }}>Yes, reset</button>
+              <button style={{...S.actBtn,flex:"0 0 auto"}} onClick={()=>setConfirmReset(false)}>Cancel</button>
+            </div>
+          </div>
+        ) : (
+          <button style={S.resetLink} onClick={()=>setConfirmReset(true)}>Reset progress</button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function StatLine({ value, label }){
+  return (<div style={S.statLine}><span style={S.statLineValue}>{value}</span><span style={S.statLineLabel}>{label}</span></div>);
 }
 
 function Library({ questions, state, persist, onEdit, settings, openSettings, section }){
@@ -410,10 +761,13 @@ function Library({ questions, state, persist, onEdit, settings, openSettings, se
 
       {questions.map((q)=>{
         const saved=state.saved.includes(q.id); const edited=!!state.edits[q.id];
+        const st=state.stats[q.id]; const mastered = st && (st.box||0)>=MASTERY_BOX;
         return (
           <div key={q.id} style={S.libCard}>
             <div style={S.libCardTop}><RegLink reg={q.reg} quote={q.quote} style={S.regTagSm} />
-              <span style={S.libTopic}>{q.topic}</span>{edited&&<span style={S.editedBadge}>edited</span>}</div>
+              <span style={S.libTopic}>{q.topic}</span>
+              {mastered&&<span style={S.masteredBadge}>mastered</span>}
+              {edited&&<span style={S.editedBadge}>edited</span>}</div>
             <div style={S.libQ}>{q.q}</div>
             <div style={S.libChoices}>
               {q.choices.map((c,i)=>(
@@ -438,7 +792,7 @@ function Library({ questions, state, persist, onEdit, settings, openSettings, se
         <div style={{marginTop:8,marginBottom:12}}>
           <button style={S.deletedToggle} onClick={()=>setShowDeleted((v)=>!v)}>{showDeleted?"▾":"▸"} Deleted ({state.deleted.length})</button>
           {showDeleted && state.deleted.map((id)=>{
-            const q=[...BASE,...state.generated].find((x)=>x.id===id); const merged=q&&state.edits[id]?{...q,...state.edits[id]}:q;
+            const q=[...BASE,...INSTRUMENT_BASE,...state.generated].find((x)=>x.id===id); const merged=q&&state.edits[id]?{...q,...state.edits[id]}:q;
             return (<div key={id} style={S.deletedRow}><span style={S.deletedText}>{merged?merged.q:id}</span>
               <button style={S.restoreBtn} onClick={()=>restore(id)}>Restore</button></div>);
           })}
@@ -491,9 +845,35 @@ function EditModal({ question, onClose, onSave }){
   );
 }
 
-function SettingsModal({ settings, onSave, onClose }){
+function SettingsModal({ settings, state, onSave, onClose, onImport }){
   const [apiKey,setApiKey]=useState(settings.apiKey||"");
   const [model,setModel]=useState(settings.model||"claude-haiku-4-5-20251001");
+  const [msg,setMsg]=useState(null);
+  const fileRef = useRef(null);
+
+  const doExport = () => {
+    try {
+      const blob = new Blob([JSON.stringify(state,null,2)], { type:"application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href=url; a.download="pocket-checkride-backup.json";
+      document.body.appendChild(a); a.click(); a.remove();
+      URL.revokeObjectURL(url); setMsg("Backup downloaded ✓");
+    } catch(e){ setMsg("Export failed."); }
+  };
+  const onFile = (e) => {
+    const f = e.target.files && e.target.files[0]; if (!f) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const obj = JSON.parse(reader.result);
+        if (!obj || typeof obj!=="object" || !Array.isArray(obj.generated)) throw new Error("bad");
+        onImport(obj); setMsg("Backup imported ✓ — your questions & progress are restored.");
+      } catch(_){ setMsg("That file isn't a valid Pocket Checkride backup."); }
+    };
+    reader.readAsText(f); e.target.value="";
+  };
+
   return (
     <div style={S.overlay} onClick={onClose}>
       <div style={S.modal} onClick={(e)=>e.stopPropagation()}>
@@ -506,9 +886,21 @@ function SettingsModal({ settings, onSave, onClose }){
         <label style={S.lbl}>Model</label>
         <input style={S.input} value={model} onChange={(e)=>setModel(e.target.value.trim())} placeholder="claude-haiku-4-5-20251001" />
         <p style={{fontSize:11,lineHeight:1.55,color:"rgba(255,255,255,0.4)",margin:"10px 0 0"}}>
-          Get a key at console.anthropic.com → API Keys. Use any model your account has access to (e.g. claude-opus-4-6).
+          Get a key at console.anthropic.com → API Keys. Use any model your account has access to (e.g. claude-haiku-4-5).
           Don't publish this file with your key embedded — anyone could use it.
         </p>
+
+        <label style={S.lbl}>Backup &amp; restore</label>
+        <p style={{fontSize:11.5,lineHeight:1.55,color:"rgba(255,255,255,0.5)",margin:"0 0 8px"}}>
+          Save your custom questions, edits, saved set, and study progress to a file — or move them to another device.
+        </p>
+        <div style={{display:"flex",gap:10}}>
+          <button style={{...S.actBtn,flex:1}} onClick={doExport}>⭳ Export backup</button>
+          <button style={{...S.actBtn,flex:1}} onClick={()=>fileRef.current&&fileRef.current.click()}>⭱ Import backup</button>
+          <input ref={fileRef} type="file" accept="application/json,.json" style={{display:"none"}} onChange={onFile} />
+        </div>
+        {msg && <div style={{...S.errBox,color:"#bfe6c8",background:"rgba(95,211,138,0.08)",borderColor:"rgba(95,211,138,0.3)",marginTop:10}}>{msg}</div>}
+
         <div style={{display:"flex",gap:10,marginTop:16}}>
           <button style={{...S.primary,flex:1}} onClick={()=>onSave({apiKey,model})}>Save</button>
           <button style={S.cancelBtn} onClick={onClose}>Cancel</button>
@@ -525,9 +917,9 @@ function TabBtn({ active, onClick, icon, label }){
 function Empty({ glyph, title, body }){
   return (<div style={S.empty}><div style={S.emptyGlyph}>{glyph}</div><div style={S.emptyTitle}>{title}</div><div style={S.emptyBody}>{body}</div></div>);
 }
-function Ring({ pct, pass, score, total }){
-  const r=68, c=2*Math.PI*r;
-  return (<svg width="150" height="150" viewBox="0 0 160 160" style={{margin:"0 auto 4px",display:"block"}}>
+function Ring({ pct, pass, score, total, small }){
+  const size = small ? 104 : 150; const r=68, c=2*Math.PI*r;
+  return (<svg width={size} height={size} viewBox="0 0 160 160" style={{margin:small?"0":"0 auto 4px",display:"block",flexShrink:0}}>
     <circle cx="80" cy="80" r={r} fill="none" stroke="rgba(255,255,255,0.08)" strokeWidth="10" />
     <circle cx="80" cy="80" r={r} fill="none" stroke={pass?"#5fd38a":"#f0a44c"} strokeWidth="10" strokeLinecap="round"
       strokeDasharray={c} strokeDashoffset={c*(1-pct/100)} transform="rotate(-90 80 80)" style={{transition:"stroke-dashoffset 1s ease"}} />
@@ -549,15 +941,18 @@ const CSS = `
 .choice:active:not(:disabled){transform:scale(0.99);} .choice:disabled{cursor:default;}
 .choice.correct{background:rgba(95,211,138,0.13);border-color:#5fd38a;color:#d8f5e3;}
 .choice.wrong{background:rgba(240,119,92,0.13);border-color:#f0775c;color:#ffded5;}
+.choice.sel{background:rgba(240,164,76,0.13);border-color:#f0a44c;color:#ffe9cf;}
 .choice.dim{opacity:.42;}
 .ckey{flex-shrink:0;width:25px;height:25px;border-radius:6px;display:grid;place-items:center;font-weight:700;font-size:12px;background:rgba(255,255,255,0.07);color:#f0a44c;}
-.correct .ckey{background:#5fd38a;color:#08130c;} .wrong .ckey{background:#f0775c;color:#1a0805;}
+.correct .ckey{background:#5fd38a;color:#08130c;} .wrong .ckey{background:#f0775c;color:#1a0805;} .sel .ckey{background:#f0a44c;color:#1a0e02;}
 .cmark{font-weight:700;font-size:15px;}
-textarea,input,button{font-family:'JetBrains Mono',monospace;}
+textarea,input,button,select{font-family:'JetBrains Mono',monospace;}
+select{appearance:none;-webkit-appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23f0a44c' stroke-width='3'><path d='M6 9l6 6 6-6'/></svg>");background-repeat:no-repeat;background-position:right 12px center;}
 ::-webkit-scrollbar{width:8px;} ::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.12);border-radius:8px;}
 `;
 
 const accent = "#f0a44c";
+const cardBg = "linear-gradient(180deg,#161c24,#11161d)";
 const S = {
   app:{minHeight:"100vh",display:"flex",flexDirection:"column",background:"radial-gradient(1000px 500px at 50% -10%, #1c2530 0%, #0d1117 55%, #080a0e 100%)",fontFamily:"'JetBrains Mono', monospace",color:"#e9e6df"},
   header:{position:"sticky",top:0,zIndex:5,display:"flex",justifyContent:"space-between",alignItems:"center",padding:"16px 18px",borderBottom:"1px solid rgba(255,255,255,0.07)",background:"rgba(13,17,23,0.85)",backdropFilter:"blur(10px)"},
@@ -570,12 +965,14 @@ const S = {
   sectionBtn:{flex:"1 1 auto",maxWidth:180,background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:9,padding:"9px 14px",fontSize:12,fontWeight:600,letterSpacing:0.5,color:"rgba(255,255,255,0.5)",cursor:"pointer",transition:"all .15s ease"},
   sectionBtnActive:{background:"rgba(240,164,76,0.15)",borderColor:accent,color:accent},
   main:{flex:1,maxWidth:600,width:"100%",margin:"0 auto",padding:"18px 16px 96px"},
-  quizTop:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8},
-  scope:{fontSize:11,letterSpacing:1,color:"rgba(255,255,255,0.4)",textTransform:"uppercase"},
-  counter:{fontSize:12,color:"rgba(255,255,255,0.45)"},
+
+  quizTop:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8,gap:10},
+  scope:{fontSize:11,letterSpacing:1,color:"rgba(255,255,255,0.4)",textTransform:"uppercase",display:"flex",alignItems:"center",gap:8,minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"},
+  backBtn:{flexShrink:0,background:"rgba(255,255,255,0.06)",border:"1px solid rgba(255,255,255,0.12)",color:"#e9e6df",width:24,height:24,borderRadius:7,fontSize:16,lineHeight:1,cursor:"pointer",display:"grid",placeItems:"center",padding:0},
+  counter:{fontSize:12,color:"rgba(255,255,255,0.45)",flexShrink:0},
   track:{height:4,background:"rgba(255,255,255,0.07)",borderRadius:4,overflow:"hidden",marginBottom:20},
   fill:{height:"100%",background:`linear-gradient(90deg,#e08a2e,${accent})`,borderRadius:4,transition:"width .4s ease"},
-  card:{background:"linear-gradient(180deg,#161c24,#11161d)",border:"1px solid rgba(255,255,255,0.08)",borderRadius:18,padding:20,boxShadow:"0 20px 50px rgba(0,0,0,0.4)"},
+  card:{background:cardBg,border:"1px solid rgba(255,255,255,0.08)",borderRadius:18,padding:20,boxShadow:"0 20px 50px rgba(0,0,0,0.4)"},
   cardHead:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12},
   topicTag:{fontSize:10.5,letterSpacing:1.5,color:"rgba(255,255,255,0.45)",textTransform:"uppercase"},
   regTag:{fontSize:12}, regTagSm:{fontSize:11.5},
@@ -590,15 +987,64 @@ const S = {
   resultSub:{color:"rgba(255,255,255,0.6)",fontSize:13,lineHeight:1.6,maxWidth:420,margin:"0 auto 18px"},
   reviewList:{display:"flex",flexDirection:"column",gap:7,maxWidth:440,margin:"0 auto 20px",textAlign:"left"},
   reviewRow:{display:"flex",alignItems:"center",gap:12,padding:"9px 13px",background:"rgba(255,255,255,0.03)",border:"1px solid rgba(255,255,255,0.06)",borderRadius:8},
-  reviewMark:{fontWeight:700,width:14}, reviewReg:{minWidth:74,fontSize:12}, reviewTopic:{fontSize:12,color:"rgba(255,255,255,0.55)"},
+  reviewMark:{fontWeight:700,width:14,flexShrink:0}, reviewReg:{minWidth:74,fontSize:12}, reviewTopic:{fontSize:12,color:"rgba(255,255,255,0.55)"},
+
+  examReview:{display:"flex",flexDirection:"column",gap:12,textAlign:"left",margin:"0 auto 20px",maxWidth:520},
+  examItem:{background:"rgba(255,255,255,0.025)",border:"1px solid rgba(255,255,255,0.08)",borderRadius:12,padding:14},
+  examItemHead:{display:"flex",alignItems:"center",gap:9,marginBottom:8},
+  examItemTopic:{fontSize:10.5,letterSpacing:1,color:"rgba(255,255,255,0.4)",textTransform:"uppercase",marginLeft:"auto"},
+  examItemQ:{fontSize:14,lineHeight:1.45,color:"#fff",marginBottom:10,fontWeight:500},
+  examChoice:{display:"flex",alignItems:"center",gap:9,fontSize:12.5,padding:"7px 10px",background:"rgba(255,255,255,0.02)",borderRadius:7,border:"1px solid transparent",color:"rgba(255,255,255,0.65)",marginBottom:5},
+  examChoiceCorrect:{background:"rgba(95,211,138,0.1)",border:"1px solid rgba(95,211,138,0.35)",color:"#d8f5e3"},
+  examChoiceWrong:{background:"rgba(240,119,92,0.1)",border:"1px solid rgba(240,119,92,0.35)",color:"#ffded5"},
+  examChoiceKey:{width:18,height:18,borderRadius:5,display:"grid",placeItems:"center",fontSize:10,fontWeight:700,background:"rgba(255,255,255,0.07)",color:accent,flexShrink:0},
+  examItemExplain:{fontSize:12,lineHeight:1.6,color:"rgba(255,255,255,0.65)",marginTop:8,paddingTop:8,borderTop:"1px solid rgba(255,255,255,0.06)"},
+
+  homeStrip:{display:"flex",gap:10,marginBottom:20},
+  homeStat:{flex:1,background:cardBg,border:"1px solid rgba(255,255,255,0.08)",borderRadius:14,padding:"14px 10px",textAlign:"center"},
+  homeStatValue:{fontSize:21,fontWeight:700,fontFamily:"'Playfair Display',Georgia,serif"},
+  homeStatLabel:{fontSize:10,letterSpacing:1,color:"rgba(255,255,255,0.4)",textTransform:"uppercase",marginTop:3},
+  homeHeading:{fontFamily:"'Playfair Display',serif",fontSize:20,color:"#fff",marginBottom:12},
+  modeGrid:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:6},
+  modeCard:{display:"flex",flexDirection:"column",alignItems:"flex-start",gap:4,textAlign:"left",background:"rgba(255,255,255,0.03)",border:"1px solid rgba(255,255,255,0.09)",borderRadius:14,padding:"13px 14px",cursor:"pointer",color:"#e9e6df",transition:"all .15s ease"},
+  modeCardActive:{background:"rgba(240,164,76,0.12)",borderColor:accent,boxShadow:"0 6px 18px rgba(240,164,76,0.15)"},
+  modeCardDisabled:{opacity:0.4,cursor:"default"},
+  modeIcon:{fontSize:17,color:"rgba(255,255,255,0.7)"},
+  modeTitle:{fontSize:13.5,fontWeight:700},
+  modeDesc:{fontSize:10.5,lineHeight:1.4,color:"rgba(255,255,255,0.5)"},
+  select:{width:"100%",background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.12)",borderRadius:9,padding:"11px 12px",color:"#fff",fontSize:13.5,outline:"none",cursor:"pointer"},
+  segRow:{display:"flex",gap:8},
+  segBtn:{flex:1,background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:9,padding:"10px",fontSize:13,fontWeight:600,color:"rgba(255,255,255,0.55)",cursor:"pointer"},
+  segBtnActive:{background:"rgba(240,164,76,0.15)",borderColor:accent,color:accent},
+  homeHint:{fontSize:11,lineHeight:1.5,color:"rgba(255,255,255,0.35)",textAlign:"center",marginTop:12},
+
+  statsHead:{fontFamily:"'Playfair Display',serif",fontSize:22,color:"#fff",marginBottom:16},
+  statCardRow:{display:"flex",alignItems:"center",gap:16,background:cardBg,border:"1px solid rgba(255,255,255,0.08)",borderRadius:16,padding:16,marginBottom:18},
+  statCol:{flex:1,display:"flex",flexDirection:"column",gap:10,minWidth:0},
+  statLine:{display:"flex",flexDirection:"column"},
+  statLineValue:{fontSize:19,fontWeight:700,color:"#fff",fontFamily:"'Playfair Display',Georgia,serif"},
+  statLineLabel:{fontSize:10.5,letterSpacing:0.5,color:"rgba(255,255,255,0.45)",marginTop:1},
+  statsSubhead:{fontSize:11,letterSpacing:1.5,color:"rgba(255,255,255,0.4)",textTransform:"uppercase",margin:"4px 0 12px"},
+  topicRow:{background:cardBg,border:"1px solid rgba(255,255,255,0.07)",borderRadius:12,padding:"12px 14px",marginBottom:9},
+  topicTop:{display:"flex",alignItems:"center",gap:10,marginBottom:8},
+  topicName:{flex:1,fontSize:13,color:"#fff",fontWeight:500,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"},
+  topicAcc:{fontSize:13,fontWeight:700,flexShrink:0},
+  drillBtn:{flexShrink:0,background:"rgba(240,164,76,0.12)",color:accent,border:"1px solid rgba(240,164,76,0.35)",borderRadius:7,padding:"5px 11px",fontSize:11,fontWeight:700,cursor:"pointer"},
+  topicBar:{height:6,background:"rgba(255,255,255,0.07)",borderRadius:4,overflow:"hidden"},
+  topicBarFill:{height:"100%",borderRadius:4,transition:"width .5s ease"},
+  topicMeta:{fontSize:10.5,color:"rgba(255,255,255,0.4)",marginTop:7},
+  resetConfirm:{background:"rgba(240,119,92,0.07)",border:"1px solid rgba(240,119,92,0.25)",borderRadius:12,padding:14,display:"inline-block"},
+  resetLink:{background:"none",border:"none",color:"rgba(255,255,255,0.35)",fontSize:12,cursor:"pointer",textDecoration:"underline",padding:"6px"},
+
   libHead:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16},
   libTitle:{fontFamily:"'Playfair Display',serif",fontSize:22,color:"#fff"},
   libCount:{fontSize:11.5,color:"rgba(255,255,255,0.4)",marginTop:2},
   ghostBtn:{background:"rgba(240,164,76,0.12)",color:accent,border:`1px solid rgba(240,164,76,0.4)`,borderRadius:9,padding:"9px 16px",fontWeight:700,fontSize:13,cursor:"pointer"},
-  libCard:{background:"linear-gradient(180deg,#161c24,#11161d)",border:"1px solid rgba(255,255,255,0.08)",borderRadius:16,padding:16,marginBottom:13},
+  libCard:{background:cardBg,border:"1px solid rgba(255,255,255,0.08)",borderRadius:16,padding:16,marginBottom:13},
   libCardTop:{display:"flex",alignItems:"center",gap:10,marginBottom:9},
   libTopic:{fontSize:10.5,letterSpacing:1,color:"rgba(255,255,255,0.45)",textTransform:"uppercase"},
   editedBadge:{marginLeft:"auto",fontSize:9.5,letterSpacing:1,color:"#7fd1f0",border:"1px solid rgba(127,209,240,0.4)",borderRadius:5,padding:"2px 6px"},
+  masteredBadge:{marginLeft:"auto",fontSize:9.5,letterSpacing:1,color:"#5fd38a",border:"1px solid rgba(95,211,138,0.4)",borderRadius:5,padding:"2px 6px"},
   libQ:{fontSize:14.5,lineHeight:1.45,color:"#fff",marginBottom:12,fontWeight:500},
   libChoices:{display:"flex",flexDirection:"column",gap:6,marginBottom:14},
   libChoice:{display:"flex",alignItems:"center",gap:9,fontSize:12.5,padding:"8px 11px",background:"rgba(255,255,255,0.025)",borderRadius:8,border:"1px solid transparent",color:"rgba(255,255,255,0.7)"},

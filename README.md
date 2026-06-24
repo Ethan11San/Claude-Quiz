@@ -4,6 +4,19 @@ A self-contained FAA Part 61 private-pilot quiz, installable on your phone as
 a PWA. React is inlined and the app is precompiled — nothing loads from the
 internet to run it.
 
+## Study features
+- **Smart Review** — a spaced-repetition engine surfaces your weak and unseen
+  questions first, so you spend time where it counts.
+- **Modes** — Practice, Smart Review, Missed-only, and an **Exam** mode that
+  hides feedback until the end and then walks you through every answer.
+- **Stats dashboard** — daily streak, overall accuracy, mastery, and per-topic
+  accuracy bars with one-tap "Drill" into your weakest topics.
+- **Setup screen** — pick mode, topic, and length (10 / 20 / All) per session.
+- **Keyboard** — press `1–4`/`A–D` to answer, `Enter`/`→` to advance.
+- **Backup** — export/import your custom questions and progress as a JSON file
+  (Settings → Export / Import).
+- Every answer links straight to the exact eCFR passage, highlighted in place.
+
 ## Run it
 
 **Open directly:** Double-click `index.html`. Works offline. (Regenerate needs

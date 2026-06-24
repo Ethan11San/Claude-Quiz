@@ -56,11 +56,21 @@ files, new precache list), bump `CACHE` in `sw.js` (e.g. `pocket-checkride-v2`
 until next online launch.
 
 **Persistence keys.** `localStorage`:
-- `part61ppl:v2` — `{ saved:[], deleted:[], edits:{}, generated:[] }`
+- `part61ppl:v2` — `{ saved:[], deleted:[], edits:{}, generated:[], stats:{}, streak:{last,count} }`
+  - `stats` — keyed by question `id`: `{ seen, correct, wrong, box, lastResult, lastTs }`.
+    `box` is the Leitner level (0–5); `box >= MASTERY_BOX` (3) counts as "mastered".
+    Drives Smart Review ordering, Missed-only mode, and the Stats dashboard.
+  - `streak` — `{ last:"YYYY-MM-DD", count }`: consecutive-day study streak.
 - `part61ppl:settings` — `{ apiKey, model }`
 
-If the question schema changes incompatibly, bump the key suffix (`:v3`) so old
-clients start fresh instead of crashing.
+New fields are merged with `DEFAULT_STATE` on load (`loadState`), so adding an
+optional field is backward compatible — no key bump needed. If the question
+schema changes **incompatibly**, bump the key suffix (`:v3`) so old clients
+start fresh instead of crashing.
+
+**Backup/restore.** Settings → Export/Import dumps the entire `:v2` state object
+(custom questions, edits, saved set, progress) to/from a JSON file. Import
+validates shape (`generated` must be an array) before replacing state.
 
 **Question schema (`BASE` array entries):**
 ```js
@@ -104,9 +114,28 @@ that need pseudo-classes / keyframes. Accent color: `#f0a44c`. Background:
   used for highlighting. The `quote` is short, source-attributed, and serves a
   functional purpose (text fragment matching).
 
+## Study features
+
+The Quiz tab opens on a **setup screen** (`QuizHome`): pick a **mode**, topic,
+and length, then start.
+- **Smart Review** — spaced-repetition order (`buildSession` → `duePriority`):
+  unseen questions first, then lowest Leitner `box`, random tiebreak.
+- **Practice** — every question, shuffled.
+- **Missed Only** — questions with lifetime `wrong > 0`.
+- **Exam** — FAA-style; `instant=false` hides per-question feedback and shows a
+  full answer-by-answer review on the results screen.
+
+The **Stats** tab (`computeStats`) shows streak, overall accuracy, a mastery
+ring, and per-topic accuracy bars (weakest first) each with a one-tap **Drill**.
+Answering anywhere updates `stats`/`streak` via `recordAnswer`.
+
+Other niceties: keyboard input in the quiz (`1–4`/`A–D` to answer, `Enter`/`→`
+to advance, `R` to retry), `navigator.vibrate` haptics, and Export/Import backup.
+
 ## Coverage status
 
-Currently covers the full §61.109(a) ASEL hour breakdown plus §61.103, §61.23,
-§61.3, §61.105, §61.107, §61.113, §61.57. Possible expansions:
-Commercial (§61.129), Instrument (§61.65), recency edge cases, scenario-format
-questions, timed exam mode, Export/Import for the user's question set.
+Covers the full §61.109(a) ASEL hour breakdown plus §61.103, §61.23, §61.3,
+§61.105, §61.107, §61.113, §61.57, §61.56 (flight review), §61.31
+(endorsements), §61.51 (logging), §61.60, §61.15 — and a 25-question Instrument
+(§61.65 / §61.57) section. Possible expansions: Commercial (§61.129), more
+scenario-format questions, weather/airspace knowledge areas.
